@@ -41,4 +41,15 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - `inv give --from loot:<id>` adds the item without checking adventure treasure. That check is P5. Potion of healing heals 2d4+2, capped at max HP, and revives from 0. Other potions, scrolls, and oils are consumed and return `effect: manual`.
 - Coin weight is 50 pieces per pound. Item weight is the vendored weight times quantity. A thrown weapon has one melee attack line.
 - The public character view is id, name, race, class, level, and status (`healthy`, `bloodied` at half or below, `dying`, or `pending`).
-- Equip does not spend an action yet. `NOT_YOUR_TURN` and `NO_ACTION_LEFT` still wait for combat in P3. The druid restriction on metal armor is not enforced.
+- Equip spends an action during combat (see P3). The druid restriction on metal armor is not enforced.
+
+## P3
+
+- Initiative is a Dexterity check. Ties break by Dexterity score, then one d20 roll-off. A remaining tie breaks by id, so the roll-off cannot loop.
+- A surprised creature cannot act or take reactions on its first turn. The turn still arrives and ends. There are no squares, so a ranged attack declared at 5 feet has disadvantage when any living foe is in the fight. Opportunity attacks are not automatic: a reaction attack is declared with `--reaction`.
+- A monster dies at 0 HP. A character at 0 HP is dying and can only make a death save, on their own turn. Three successes stabilize, three failures kill, a natural 20 restores 1 HP, and a natural 1 is two failures. Damage that drops a character to 0 and continues for at least their maximum HP kills them outright. Damage against a character already at 0 HP is one death-save failure, or two if the hit was a critical.
+- Victory awards the XP of monsters killed in that combat, split evenly among living characters, with the remainder dropped. Fleeing or a parley awards none. A goblin is worth 50 XP.
+- Players see monster hit points as `healthy`, `bloodied`, `dead`, or the character statuses. The event log keeps the number and `log` strips `target_hp` for anyone who is not the DM.
+- Help in combat makes the next ally attack against that target have advantage. Hide sets a Stealth total; the next attack by the hidden creature has advantage. Dodge imposes disadvantage on attacks against that creature until its next turn starts.
+- `--bonus` on Disengage or Hide is allowed only with Nimble Escape or Cunning Action.
+- `NO_SLOT` still waits for spellcasting in P4. Cast is not part of this phase.

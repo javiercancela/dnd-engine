@@ -30,12 +30,7 @@ ALL_CODES = (
 )
 
 DEFERRED_CODES = (
-    'NOT_YOUR_TURN',
-    'NO_ACTION_LEFT',
     'NO_SLOT',
-    'OUT_OF_RANGE',
-    'INVALID_TARGET',
-    'INCAPACITATED',
 )
 
 

@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+from dnd import combat
 from dnd.dice import roll_expr
 from dnd.errors import EngineError, exit_code
 from dnd import party
@@ -28,6 +29,8 @@ _VALUE_FLAGS = {
     '--campaign', '--adventure', '--seed', '--as', '--reason',
     '--last', '--since', '--type', '--json-in', '--dc', '--help-from',
     '--to', '--from', '--qty', '--slot', '--section', '--target',
+    '--combatants', '--surprised', '--weapon', '--natural', '--range',
+    '--cover', '--type', '--ft', '--duration', '--level', '--source',
 }
 
 COMMANDS = (
@@ -163,6 +166,90 @@ COMMANDS = (
         'who': 'owner or dm',
         'summary': 'Use a potion or other consumable.',
     },
+    {
+        'name': 'encounter spawn',
+        'usage': 'dnd encounter spawn <id> --as dm [--roll-hp] [--start-combat]',
+        'who': 'dm',
+        'summary': 'Create monsters from the adventure.',
+    },
+    {
+        'name': 'combat start',
+        'usage': 'dnd combat start --combatants id,id --as dm [--surprised id,id]',
+        'who': 'dm',
+        'summary': 'Roll initiative and start round 1.',
+    },
+    {
+        'name': 'combat status',
+        'usage': 'dnd combat status --as <actor>',
+        'who': 'any',
+        'summary': 'Order, round, and public status. Monster hit points are numbers only for the DM.',
+    },
+    {
+        'name': 'combat end',
+        'usage': 'dnd combat end --reason fled|victory|parley --as dm',
+        'who': 'dm',
+        'summary': 'End combat. Victory awards monster XP, split evenly.',
+    },
+    {
+        'name': 'turn end',
+        'usage': 'dnd turn end --as <current>',
+        'who': 'current creature, or the DM for a monster',
+        'summary': 'Advance the turn and tick durations.',
+    },
+    {
+        'name': 'attack',
+        'usage': 'dnd attack <attacker> <target> --weapon <id> --range FT --as <actor> [--adv|--dis] [--reaction] [--cover half|three-quarters]',
+        'who': 'the attacker, or the DM for a monster',
+        'summary': 'Roll an attack and apply damage.',
+    },
+    {
+        'name': 'damage',
+        'usage': 'dnd damage <target> <amount|expr> --type T --as dm',
+        'who': 'dm',
+        'summary': 'Apply damage, resistance, and dropping to 0 HP.',
+    },
+    {
+        'name': 'heal',
+        'usage': 'dnd heal <target> <amount|expr> --as dm',
+        'who': 'dm',
+        'summary': 'Restore hit points, capped at the maximum.',
+    },
+    {
+        'name': 'temp-hp',
+        'usage': 'dnd temp-hp <target> N --as dm',
+        'who': 'dm',
+        'summary': 'Set temporary hit points to the higher value.',
+    },
+    {
+        'name': 'death-save',
+        'usage': 'dnd death-save <id> --as <owner>',
+        'who': 'owner or dm',
+        'summary': 'Death saving throw at 0 hit points.',
+    },
+    {
+        'name': 'condition add',
+        'usage': 'dnd condition add <id> <condition> [--duration TEXT] [--level N] --as dm',
+        'who': 'dm',
+        'summary': 'Add a condition or set exhaustion.',
+    },
+    {
+        'name': 'condition remove',
+        'usage': 'dnd condition remove <id> <condition> --as dm',
+        'who': 'dm',
+        'summary': 'Remove a condition.',
+    },
+    {
+        'name': 'action',
+        'usage': 'dnd action <id> dash|disengage|dodge|help|hide|ready|search|use-object [--bonus] --as <actor>',
+        'who': 'the creature, or the DM for a monster',
+        'summary': 'Spend an action. Dodge imposes disadvantage on attacks against the creature.',
+    },
+    {
+        'name': 'move',
+        'usage': 'dnd move <id> --ft N [--difficult] --as <actor>',
+        'who': 'the creature, or the DM for a monster',
+        'summary': 'Spend movement.',
+    },
 )
 
 
@@ -233,6 +320,32 @@ def dispatch(argv):
         return cmd_unequip(args, explicit)
     if group == 'use':
         return cmd_use(args, explicit)
+    if group == 'encounter' and verb == 'spawn':
+        return cmd_spawn(args, explicit)
+    if group == 'combat' and verb == 'start':
+        return cmd_combat_start(args, explicit)
+    if group == 'combat' and verb == 'status':
+        return cmd_combat_status(args, explicit)
+    if group == 'combat' and verb == 'end':
+        return cmd_combat_end(args, explicit)
+    if group == 'turn' and verb == 'end':
+        return cmd_turn_end(args, explicit)
+    if group == 'attack':
+        return cmd_attack(args, explicit)
+    if group == 'damage':
+        return cmd_damage(args, explicit)
+    if group == 'heal':
+        return cmd_heal(args, explicit)
+    if group == 'temp-hp':
+        return cmd_temp_hp(args, explicit)
+    if group == 'death-save':
+        return cmd_death_save(args, explicit)
+    if group == 'condition':
+        return cmd_condition(args, explicit)
+    if group == 'action':
+        return cmd_action(args, explicit)
+    if group == 'move':
+        return cmd_move(args, explicit)
     raise EngineError('BAD_ARGS', 'choose a command')
 
 
@@ -510,10 +623,12 @@ def _redact(event, actor):
             {'counter': roll.get('counter'), 'secret': True}
             for roll in event.get('rolls') or []
         ]
-    if actor != 'dm' and event.get('secret_dc') and isinstance(hidden.get('outcome'), dict):
+    if actor != 'dm' and isinstance(hidden.get('outcome'), dict):
         outcome = dict(hidden['outcome'])
-        outcome.pop('dc', None)
-        outcome.pop('success', None)
+        if event.get('secret_dc'):
+            outcome.pop('dc', None)
+            outcome.pop('success', None)
+        outcome.pop('target_hp', None)
         hidden['outcome'] = outcome
     return hidden
 
@@ -597,7 +712,7 @@ def guess_cmd(argv):
         if token.startswith('--'):
             continue
         words.append(token)
-        if words[0] not in ('campaign', 'char', 'state', 'inv'):
+        if words[0] not in ('campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn', 'condition'):
             return words[0]
         if len(words) == 2:
             return words[0] + ' ' + words[1]
@@ -732,6 +847,90 @@ def _parser():
     use_p.add_argument('item')
     use_p.add_argument('--target')
     use_p.add_argument('--as', dest='actor')
+
+    encounter = sub.add_parser('encounter', add_help=False)
+    encounter_sub = encounter.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    spawn_p = encounter_sub.add_parser('spawn', add_help=False)
+    spawn_p.add_argument('id')
+    spawn_p.add_argument('--as', dest='actor')
+    spawn_p.add_argument('--roll-hp', action='store_true')
+    spawn_p.add_argument('--start-combat', action='store_true')
+
+    combat_p = sub.add_parser('combat', add_help=False)
+    combat_sub = combat_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    start_p = combat_sub.add_parser('start', add_help=False)
+    start_p.add_argument('--combatants', required=True)
+    start_p.add_argument('--surprised', default='')
+    start_p.add_argument('--as', dest='actor')
+    status_p = combat_sub.add_parser('status', add_help=False)
+    status_p.add_argument('--as', dest='actor')
+    end_p = combat_sub.add_parser('end', add_help=False)
+    end_p.add_argument('--reason', required=True)
+    end_p.add_argument('--as', dest='actor')
+
+    turn_p = sub.add_parser('turn', add_help=False)
+    turn_sub = turn_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    turn_end = turn_sub.add_parser('end', add_help=False)
+    turn_end.add_argument('--as', dest='actor')
+
+    attack_p = sub.add_parser('attack', add_help=False)
+    attack_p.add_argument('attacker')
+    attack_p.add_argument('target')
+    attack_p.add_argument('--weapon')
+    attack_p.add_argument('--natural')
+    attack_p.add_argument('--range', dest='reach', type=int, required=True)
+    attack_p.add_argument('--as', dest='actor')
+    attack_p.add_argument('--adv', action='store_true')
+    attack_p.add_argument('--dis', action='store_true')
+    attack_p.add_argument('--reaction', action='store_true')
+    attack_p.add_argument('--offhand', action='store_true')
+    attack_p.add_argument('--cover')
+
+    damage_p = sub.add_parser('damage', add_help=False)
+    damage_p.add_argument('id')
+    damage_p.add_argument('expr')
+    damage_p.add_argument('--type', dest='damage_type', required=True)
+    damage_p.add_argument('--source')
+    damage_p.add_argument('--as', dest='actor')
+
+    heal_p = sub.add_parser('heal', add_help=False)
+    heal_p.add_argument('id')
+    heal_p.add_argument('expr')
+    heal_p.add_argument('--source')
+    heal_p.add_argument('--as', dest='actor')
+
+    temp_p = sub.add_parser('temp-hp', add_help=False)
+    temp_p.add_argument('id')
+    temp_p.add_argument('amount', type=int)
+    temp_p.add_argument('--as', dest='actor')
+
+    death_p = sub.add_parser('death-save', add_help=False)
+    death_p.add_argument('id')
+    death_p.add_argument('--as', dest='actor')
+
+    condition_p = sub.add_parser('condition', add_help=False)
+    condition_sub = condition_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    for cond_verb in ('add', 'remove'):
+        cond = condition_sub.add_parser(cond_verb, add_help=False)
+        cond.add_argument('id')
+        cond.add_argument('name')
+        cond.add_argument('--duration')
+        cond.add_argument('--level', type=int)
+        cond.add_argument('--as', dest='actor')
+
+    action_p = sub.add_parser('action', add_help=False)
+    action_p.add_argument('id')
+    action_p.add_argument('verb')
+    action_p.add_argument('target', nargs='?')
+    action_p.add_argument('--bonus', action='store_true')
+    action_p.add_argument('--trigger')
+    action_p.add_argument('--as', dest='actor')
+
+    move_p = sub.add_parser('move', add_help=False)
+    move_p.add_argument('id')
+    move_p.add_argument('--ft', type=int, required=True)
+    move_p.add_argument('--difficult', action='store_true')
+    move_p.add_argument('--as', dest='actor')
     return parser
 
 
@@ -879,6 +1078,7 @@ def cmd_equip(args, explicit):
     with store.locked(directory):
         state, _prev = store.fold(store.read_events(directory))
         _result, event = party.equip_item(state, args.id, args.item, args.slot, actor)
+        _attach_action(state, event, actor, args.id)
         saved, new_state = _commit(directory, event, state)
     return _ok('equip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
@@ -889,6 +1089,7 @@ def cmd_unequip(args, explicit):
     with store.locked(directory):
         state, _prev = store.fold(store.read_events(directory))
         _result, event = party.unequip_item(state, args.id, args.item, actor)
+        _attach_action(state, event, actor, args.id)
         saved, new_state = _commit(directory, event, state)
     return _ok('unequip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
@@ -899,8 +1100,173 @@ def cmd_use(args, explicit):
     with store.locked(directory):
         state, _prev = store.fold(store.read_events(directory))
         outcome, event = party.use_item(state, args.id, args.item, args.target, actor)
+        _attach_action(state, event, actor, args.id)
         saved, new_state = _commit(directory, event, state)
     return _ok('use', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def _attach_action(state, event, actor, creature_id):
+    change = combat.require_combat_action(state, actor, creature_id)
+    if change:
+        event['changes'].append(change)
+
+
+def _read_adventure_doc(directory):
+    path = directory / 'adventure.json'
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def _ids(text):
+    return [part.strip() for part in (text or '').split(',') if part.strip()]
+
+
+def cmd_spawn(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        adventure = _read_adventure_doc(directory)
+        result, event = combat.spawn_encounter(state, adventure, args.id, args.roll_hp)
+        saved, new_state = _commit(directory, event, state)
+        ids = [saved['id']]
+        rolls = list(saved['rolls'])
+        if args.start_combat:
+            ids_to_fight = list((new_state.get('characters') or {}).keys()) + result['spawned']
+            started, start_event = combat.start_combat(new_state, ids_to_fight, [])
+            saved, new_state = _commit(directory, start_event, new_state)
+            ids.append(saved['id'])
+            rolls.extend(saved['rolls'])
+            result = {'spawned': result['spawned'], 'combat': started}
+    return _ok('encounter spawn', result, event_ids=ids, rolls=rolls, turn=store.turn_view(new_state))
+
+
+def cmd_combat_start(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.start_combat(state, _ids(args.combatants), _ids(args.surprised))
+        saved, new_state = _commit(directory, event, state)
+    return _ok('combat start', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_combat_status(args, explicit):
+    actor = _require_actor(args.actor)
+    _directory, state = _with_campaign(explicit)
+    return _ok('combat status', combat.combat_status(state, actor), turn=store.turn_view(state))
+
+
+def cmd_combat_end(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.end_combat(state, args.reason)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('combat end', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_turn_end(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.end_turn(state, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('turn end', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_attack(args, explicit):
+    actor = _require_actor(args.actor)
+    if args.cover and args.cover not in ('half', 'three-quarters'):
+        raise EngineError('BAD_ARGS', 'cover must be half or three-quarters')
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event, warnings = combat.attack(
+            state, args.attacker, args.target, args.weapon, args.natural, args.reach,
+            actor, args.adv, args.dis, args.reaction, args.offhand, args.cover,
+        )
+        saved, new_state = _commit(directory, event, state)
+    if actor != 'dm':
+        result = dict(result)
+        result.pop('target_hp', None)
+    return _ok('attack', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state), warnings=warnings)
+
+
+def cmd_damage(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.deal_damage(state, args.id, args.expr, args.damage_type, args.source)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('damage', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_heal(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.heal_target(state, args.id, args.expr)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('heal', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_temp_hp(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.set_temp_hp(state, args.id, args.amount)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('temp-hp', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_death_save(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.death_save(state, args.id, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('death-save', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_condition(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.change_condition(
+            state, args.id, args.name, args.verb == 'remove',
+            combat.parse_duration(args.duration), args.level,
+        )
+        saved, new_state = _commit(directory, event, state)
+    return _ok(f'condition {args.verb}', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_action(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.take_action(
+            state, args.id, args.verb, args.target, actor, args.bonus, args.trigger,
+        )
+        saved, new_state = _commit(directory, event, state)
+    return _ok('action', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_move(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = combat.move_creature(state, args.id, args.ft, args.difficult, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('move', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def _remove_tree(directory):
