@@ -2,7 +2,7 @@
 
 Local D&D 5e rules engine for the System Reference Document 5.1 (2014 rules).
 
-This phase vendors the SRD 5.1 JSON and loads entries by kind and slug. The engine uses the Python 3.11+ standard library only.
+The engine uses the Python 3.11+ standard library only. SRD data is vendored under `engine/data/srd-5.1/`. The interface spec is `docs/engine-spec.md`. Choices where that spec is ambiguous are recorded in `docs/decisions.md`.
 
 ## Tests
 
@@ -11,6 +11,18 @@ From the repository root:
 ```bash
 cd engine && python3 -m unittest discover -s tests
 ```
+
+## CLI
+
+From the `engine/` directory:
+
+```bash
+python3 -m dnd help
+python3 -m dnd help --about
+python3 -m dnd campaign new <name> --adventure FILE --seed N --as dm --campaign DIR
+```
+
+`--campaign DIR` or `DND_CAMPAIGN` is the directory that holds one subdirectory per campaign. The default is `campaigns/` in the repo root.
 
 ## Lookup
 

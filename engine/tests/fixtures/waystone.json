@@ -1,0 +1,15 @@
+{
+  "format": "dnd-adventure/1",
+  "id": "waystone",
+  "title": "The Waystone",
+  "levels": [1, 1],
+  "ruleset": "srd-5.1",
+  "start": "trailhead",
+  "locations": [
+    {
+      "id": "trailhead",
+      "name": "Trailhead",
+      "read_aloud": "A cairn of pale stones marks the start of a sheep track."
+    }
+  ]
+}
