@@ -167,7 +167,15 @@ def _set_path(state, path, value):
 
 
 def fold(events):
-    """Replay a valid log. Raise LOG_TAMPERED when the chain does not match."""
+    """Replay a valid log. Raise LOG_TAMPERED when the chain does not match.
+
+    A revert event drops the target command's changes. Rolls already made stay
+    spent: ``rng.counter`` changes on the reverted event still apply.
+    """
+    reverted = {
+        event.get('reverts') for event in events
+        if event.get('type') == 'revert' and event.get('reverts') is not None
+    }
     state = {}
     prev = ''
     for index, event in enumerate(events):
@@ -177,7 +185,10 @@ def fold(events):
                 'event hash chain does not match',
                 {'event_id': event.get('id'), 'index': index},
             )
-        apply_changes(state, event.get('changes') or [])
+        changes = event.get('changes') or []
+        if event.get('id') in reverted:
+            changes = [change for change in changes if change.get('path') == 'rng.counter']
+        apply_changes(state, changes)
         prev = event['hash']
     return state, prev
 

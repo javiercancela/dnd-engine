@@ -316,7 +316,7 @@ class CliTest(unittest.TestCase):
         code, one = self.invoke(('help', 'roll'))
         self.assertEqual(code, 0)
         self.assertEqual(one['result']['commands'][0]['name'], 'roll')
-        code, payload = self.invoke(('help', 'player'))
+        code, payload = self.invoke(('help', 'nosuch'))
         self.assertEqual(code, 2)
         self.assertEqual(payload['error']['code'], 'BAD_ARGS')
 
