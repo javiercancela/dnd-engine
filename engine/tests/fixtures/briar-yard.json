@@ -1,0 +1,45 @@
+{
+  "format": "dnd-adventure/1",
+  "id": "briar-yard",
+  "title": "The Briar Yard",
+  "levels": [1, 1],
+  "ruleset": "srd-5.1",
+  "start": "briar-yard",
+  "locations": [
+    {"id": "briar-yard", "name": "Briar Yard", "read_aloud": "Thorn bushes crowd a packed-dirt yard behind a ruined fence."}
+  ],
+  "encounters": [
+    {"id": "yard-goblins", "monsters": [{"ref": "srd:goblin", "count": 4}]},
+    {"id": "lone-goblin", "monsters": [{"ref": "srd:goblin", "count": 1}]},
+    {"id": "briar-wolf", "monsters": [{"ref": "custom:briar-wolf", "count": 1}]}
+  ],
+  "custom_monsters": [
+    {
+      "id": "custom:briar-wolf",
+      "name": "Briar Wolf",
+      "stat_block": {
+        "name": "Briar Wolf",
+        "armor_class": [{"value": 12}],
+        "hit_points": 11,
+        "hit_points_roll": "2d8+2",
+        "speed": {"walk": "40 ft."},
+        "strength": 12,
+        "dexterity": 15,
+        "constitution": 12,
+        "intelligence": 3,
+        "wisdom": 12,
+        "charisma": 6,
+        "challenge_rating": 0.25,
+        "xp": 50,
+        "actions": [
+          {
+            "name": "Bite",
+            "desc": "Melee Weapon Attack: +4 to hit, reach 5 ft., one target. Hit: 5 (1d6 + 2) piercing damage.",
+            "attack_bonus": 4,
+            "damage": [{"damage_dice": "1d6+2", "damage_type": {"index": "piercing"}}]
+          }
+        ]
+      }
+    }
+  ]
+}

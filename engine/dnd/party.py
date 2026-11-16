@@ -7,6 +7,7 @@ from dnd.chargen import (
     auto_fail_save,
     carry_weight,
     compile_character,
+    condition_names,
     public_view,
     refresh_gear,
     rule,
@@ -142,14 +143,27 @@ def state_view(state, actor, section):
         return {'party': party}
     if section == 'location':
         return location
+    monsters = []
+    for monster_id in sorted((state.get('monsters') or {})):
+        monster = state['monsters'][monster_id]
+        view = {
+            'id': monster_id,
+            'name': monster.get('name'),
+            'status': status_of(monster),
+        }
+        view['conditions'] = condition_names(monster)
+        if actor == 'dm':
+            view['hp'] = monster.get('hp')
+        monsters.append(view)
     if section == 'combat':
-        return {'combat': combat}
+        return {'combat': combat, 'monsters': monsters}
     return {
         'party': party,
         'location': location['location'],
         'chapter': location['chapter'],
         'time': state.get('time'),
         'combat': combat,
+        'monsters': monsters,
     }
 
 

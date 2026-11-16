@@ -164,8 +164,18 @@ def save_bonus(character, ability):
     return bonus
 
 
+def condition_names(creature):
+    names = []
+    for entry in creature.get('conditions') or []:
+        if isinstance(entry, str):
+            names.append(entry)
+        elif isinstance(entry, dict) and entry.get('index'):
+            names.append(entry['index'])
+    return names
+
+
 def auto_fail_save(character, ability):
-    conditions = set(character.get('conditions') or [])
+    conditions = set(condition_names(character))
     if ability in ('str', 'dex') and conditions.intersection(('paralyzed', 'stunned', 'unconscious')):
         return True
     return False
@@ -185,7 +195,7 @@ def advantage_state(character, kind, skill, flag_adv, flag_dis, help_from):
         dis.append('flag:dis')
     if help_from and kind == 'check':
         adv.append(f'help:{help_from}')
-    conditions = set(character.get('conditions') or [])
+    conditions = set(condition_names(character))
     exhaustion = character.get('exhaustion') or 0
     if kind == 'check':
         if conditions.intersection(('poisoned', 'frightened')) or exhaustion >= 1:
@@ -888,9 +898,11 @@ def _require_keys(data, keys):
 def status_of(character):
     if character.get('pending_scores') is not None:
         return 'pending'
+    if character.get('dead'):
+        return 'dead'
     current = character['hp']['current']
     if current <= 0:
-        return 'dying'
+        return 'stable' if character.get('stable') else 'dying'
     if current * 2 <= character['hp']['max']:
         return 'bloodied'
     return 'healthy'
