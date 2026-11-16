@@ -14,6 +14,7 @@ from dnd import levelup
 from dnd.dice import roll_expr
 from dnd import spells
 from dnd.errors import EngineError, exit_code
+from dnd import history
 from dnd import party
 from dnd import store
 
@@ -34,7 +35,7 @@ _VALUE_FLAGS = {
     '--to', '--from', '--qty', '--slot', '--section', '--target',
     '--combatants', '--surprised', '--weapon', '--natural', '--range',
     '--cover', '--type', '--ft', '--duration', '--level', '--source',
-    '--targets', '--slot', '--spend', '--travel-hours', '--json-in',
+        '--targets', '--slot', '--spend', '--travel-hours', '--controller',
 }
 
 COMMANDS = (
@@ -338,6 +339,24 @@ COMMANDS = (
         'who': 'dm',
         'summary': 'Move the campaign clock.',
     },
+    {
+        'name': 'player add',
+        'usage': 'dnd player add <id> --controller bot:<name>|javi|dm --as dm',
+        'who': 'dm',
+        'summary': 'Register a seat. javi and dm seats are relayed by the DM.',
+    },
+    {
+        'name': 'undo',
+        'usage': 'dnd undo --reason TEXT --as dm',
+        'who': 'dm',
+        'summary': 'Revert the last state change. The dice counter stays advanced.',
+    },
+    {
+        'name': 'override',
+        'usage': 'dnd override <path> <json> --reason TEXT --as dm',
+        'who': 'dm',
+        'summary': 'Set one state path. It cannot touch rng.',
+    },
 )
 
 
@@ -460,6 +479,12 @@ def dispatch(argv):
         return cmd_xp_milestone(args, explicit)
     if group == 'level' and verb == 'up':
         return cmd_level_up(args, explicit)
+    if group == 'player' and verb == 'add':
+        return cmd_player_add(args, explicit)
+    if group == 'undo':
+        return cmd_undo(args, explicit)
+    if group == 'override':
+        return cmd_override(args, explicit)
     raise EngineError('BAD_ARGS', 'choose a command')
 
 
@@ -731,6 +756,41 @@ def _advantage(adv, dis):
     return 'none', [], []
 
 
+_HIDDEN_KEYS = {'dm_notes', 'dm_only', 'target_hp', 'secret_dc'}
+
+
+def _player_view(value, monster=False):
+    """Drop DM-only fields and monster hit points from a player-facing value."""
+    if isinstance(value, list):
+        return [_player_view(item, monster) for item in value]
+    if not isinstance(value, dict):
+        return value
+    ref = value.get('ref')
+    is_monster = monster or (
+        isinstance(ref, str) and (ref.startswith('srd:') or ref.startswith('custom:'))
+    )
+    cleaned = {}
+    for key, item in value.items():
+        if key in _HIDDEN_KEYS:
+            continue
+        if is_monster and key == 'hp':
+            continue
+        if key == 'changes':
+            cleaned[key] = [_player_change(change) for change in item or []]
+            continue
+        cleaned[key] = _player_view(item, is_monster)
+    return cleaned
+
+
+def _player_change(change):
+    path = str(change.get('path') or '')
+    monster = path == 'monsters' or path.startswith('monsters.')
+    shown = dict(change)
+    shown['from'] = _player_view(change.get('from'), monster)
+    shown['to'] = _player_view(change.get('to'), monster)
+    return shown
+
+
 def _redact(event, actor):
     hidden = dict(event)
     if event.get('secret'):
@@ -738,13 +798,17 @@ def _redact(event, actor):
             {'counter': roll.get('counter'), 'secret': True}
             for roll in event.get('rolls') or []
         ]
-    if actor != 'dm' and isinstance(hidden.get('outcome'), dict):
-        outcome = dict(hidden['outcome'])
-        if event.get('secret_dc'):
+    if actor != 'dm':
+        hidden = _player_view(hidden)
+        if event.get('type') == 'adventure' and isinstance(hidden.get('outcome'), dict):
+            outcome = dict(hidden['outcome'])
+            outcome.pop('dc', None)
+            hidden['outcome'] = outcome
+        if event.get('secret_dc') and isinstance(hidden.get('outcome'), dict):
+            outcome = dict(hidden['outcome'])
             outcome.pop('dc', None)
             outcome.pop('success', None)
-        outcome.pop('target_hp', None)
-        hidden['outcome'] = outcome
+            hidden['outcome'] = outcome
     return hidden
 
 
@@ -829,7 +893,7 @@ def guess_cmd(argv):
         words.append(token)
         if words[0] not in (
             'campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn',
-            'condition', 'rest', 'adventure', 'trap', 'xp', 'level', 'time',
+            'condition', 'rest', 'adventure', 'trap', 'xp', 'level', 'time', 'player',
         ):
             return words[0]
         if len(words) == 2:
@@ -1127,6 +1191,23 @@ def _parser():
     up_p.add_argument('--json-in')
     up_p.add_argument('--roll', action='store_true')
     up_p.add_argument('--as', dest='actor')
+
+    player_p = sub.add_parser('player', add_help=False)
+    player_sub = player_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    add_p = player_sub.add_parser('add', add_help=False)
+    add_p.add_argument('player_id')
+    add_p.add_argument('--controller', required=True)
+    add_p.add_argument('--as', dest='actor')
+
+    undo_p = sub.add_parser('undo', add_help=False)
+    undo_p.add_argument('--reason', required=True)
+    undo_p.add_argument('--as', dest='actor')
+
+    override_p = sub.add_parser('override', add_help=False)
+    override_p.add_argument('path')
+    override_p.add_argument('value')
+    override_p.add_argument('--reason', required=True)
+    override_p.add_argument('--as', dest='actor')
     return parser
 
 
@@ -1584,6 +1665,9 @@ def cmd_trap(args, explicit):
         else:
             result, events = adventure.trap_disarm(state, doc, args.trap, args.id, actor)
         saved, new_state = _commit_many(directory, events, state)
+    if actor != 'dm' and isinstance(result, dict):
+        result = dict(result)
+        result.pop('dc', None)
     return _ok(f'trap {args.verb}', result, event_ids=[item['id'] for item in saved], rolls=saved[-1]['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1628,6 +1712,37 @@ def cmd_level_up(args, explicit):
         result, event = levelup.level_up(state, args.id, choices, args.roll, actor)
         saved, new_state = _commit(directory, event, state)
     return _ok('level up', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_player_add(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = history.add_seat(state, args.player_id, args.controller)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('player add', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_undo(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        events = store.read_events(directory)
+        state, _prev = store.fold(events)
+        result, event = history.undo(events, args.reason)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('undo', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_override(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = history.override(state, args.path, args.value, args.reason)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('override', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def _remove_tree(directory):

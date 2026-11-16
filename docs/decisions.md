@@ -73,3 +73,11 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - Hit points on level-up use the average (rounded up) plus Constitution, and Dwarven Toughness adds 1. An ability increase that changes Constitution also adds or removes 1 hit point per level the character has reached. Extra Attack, invocations, metamagic, and a hunter's prey option are recorded on the sheet; the attack command does not swing twice yet.
 - A wizard adds two spellbook spells per level. Other casters add spells to match `spells_known`. A circle's bonus cantrip is the feature, not an extra cantrip slot.
 - `time advance` moves the clock and clears round-duration conditions. Treasure is taken item by item from `loot:<id>`.
+
+## P6
+
+- Extra Attack (the level-5 fighter, barbarian, monk, paladin, and ranger features) allows two `attack`s for one action. The second swing does not refresh the action. A bonus-action or reaction attack does not gain the extra swing.
+- `undo` appends a revert that points at the last state-changing event. Replay skips that event's changes except `rng.counter`, so the dice stay spent and the log still shows the attempt.
+- `override` sets one path and refuses `rng`. It does not rewrite older events.
+- `player add` registers a seat. Controllers are `bot:<name>`, `javi`, or `dm`. The engine still cannot see which process ran a command. A `javi` or `dm` seat is stamped `relayed_by: dm`.
+- Player-facing output drops `dm_notes`, `dm_only`, `target_hp`, monster hit-point objects, secret dice, and trap DCs.

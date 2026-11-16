@@ -202,7 +202,17 @@ def attack(state, attacker_id, target_id, weapon, natural, declared_range, actor
     if _incapacitated(attacker):
         raise EngineError('INCAPACITATED', f'{attacker_id} cannot act', {'id': attacker_id})
     kind = 'reaction' if reaction else 'bonus' if offhand else 'action'
-    _assert_economy(state, attacker_id, kind)
+    extra_swing = False
+    if kind == 'action':
+        economy = ((state.get('combat') or {}).get('economy') or {}).get(attacker_id) or {}
+        if economy.get('action'):
+            extra_swing = False
+        elif economy.get('extra_attack'):
+            extra_swing = True
+        else:
+            raise EngineError('NO_ACTION_LEFT', 'no action left', {'kind': 'action'})
+    else:
+        _assert_economy(state, attacker_id, kind)
     target = _require_creature(state, target_id)
     if attacker_id == target_id or _is_dead(target):
         raise EngineError('INVALID_TARGET', f'{target_id} is not a valid target', {'id': target_id})
@@ -276,7 +286,7 @@ def attack(state, attacker_id, target_id, weapon, natural, declared_range, actor
         attacker['hidden'] = False
         help_map = new_state['combat'].setdefault('help', {})
         help_map.pop(target_id, None)
-    _spend(new_state, attacker_id, kind)
+    _spend_attack(new_state, attacker_id, kind, extra_swing, attacker)
     new_state['rng']['counter'] = counter
     result = {
         'hit': hit,
@@ -974,6 +984,27 @@ def _assert_economy(state, creature_id, kind):
 
 def _spend(state, creature_id, kind):
     state['combat']['economy'][creature_id][kind] = False
+
+
+def _has_extra_attack(creature):
+    names = {feature.get('id') for feature in creature.get('features') or []}
+    return bool(names.intersection({
+        'extra-attack-1', 'barbarian-extra-attack', 'monk-extra-attack',
+        'paladin-extra-attack', 'ranger-extra-attack',
+    }))
+
+
+def _spend_attack(state, attacker_id, kind, extra_swing, attacker):
+    economy = state['combat']['economy'][attacker_id]
+    if kind != 'action':
+        economy[kind] = False
+        return
+    if extra_swing:
+        economy['extra_attack'] = False
+        return
+    economy['action'] = False
+    if _has_extra_attack(attacker):
+        economy['extra_attack'] = True
 
 
 def _incapacitated(creature):
