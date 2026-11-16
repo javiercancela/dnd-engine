@@ -29,9 +29,7 @@ ALL_CODES = (
     'LOG_TAMPERED',
 )
 
-DEFERRED_CODES = (
-    'NO_SLOT',
-)
+DEFERRED_CODES = ()
 
 
 def exit_code(code):

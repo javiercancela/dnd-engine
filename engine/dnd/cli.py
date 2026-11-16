@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dnd import combat
 from dnd.dice import roll_expr
+from dnd import spells
 from dnd.errors import EngineError, exit_code
 from dnd import party
 from dnd import store
@@ -31,6 +32,7 @@ _VALUE_FLAGS = {
     '--to', '--from', '--qty', '--slot', '--section', '--target',
     '--combatants', '--surprised', '--weapon', '--natural', '--range',
     '--cover', '--type', '--ft', '--duration', '--level', '--source',
+    '--targets', '--slot', '--spend',
 }
 
 COMMANDS = (
@@ -250,6 +252,30 @@ COMMANDS = (
         'who': 'the creature, or the DM for a monster',
         'summary': 'Spend movement.',
     },
+    {
+        'name': 'cast',
+        'usage': 'dnd cast <id> <spell> [--targets a,b] [--slot N] [--range FT] --as <actor> [--ritual] [--reaction]',
+        'who': 'the caster, or the DM for a relayed seat',
+        'summary': 'Cast a prepared or known spell. Unmodelled spells return effect manual.',
+    },
+    {
+        'name': 'rest short',
+        'usage': 'dnd rest short --as dm [--spend id:N,id:N]',
+        'who': 'dm',
+        'summary': 'Spend an hour. Hit dice, Second Wind, warlock slots, and Arcane Recovery.',
+    },
+    {
+        'name': 'rest long',
+        'usage': 'dnd rest long --as dm',
+        'who': 'dm',
+        'summary': 'Spend eight hours. Restore hit points, hit dice, slots, and features.',
+    },
+    {
+        'name': 'rest spend-hd',
+        'usage': 'dnd rest spend-hd <id> N --as <owner>',
+        'who': 'owner or dm',
+        'summary': 'Spend hit dice outside combat.',
+    },
 )
 
 
@@ -346,6 +372,14 @@ def dispatch(argv):
         return cmd_action(args, explicit)
     if group == 'move':
         return cmd_move(args, explicit)
+    if group == 'cast':
+        return cmd_cast(args, explicit)
+    if group == 'rest' and verb == 'short':
+        return cmd_rest_short(args, explicit)
+    if group == 'rest' and verb == 'long':
+        return cmd_rest_long(args, explicit)
+    if group == 'rest' and verb == 'spend-hd':
+        return cmd_spend_hd(args, explicit)
     raise EngineError('BAD_ARGS', 'choose a command')
 
 
@@ -712,7 +746,7 @@ def guess_cmd(argv):
         if token.startswith('--'):
             continue
         words.append(token)
-        if words[0] not in ('campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn', 'condition'):
+        if words[0] not in ('campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn', 'condition', 'rest'):
             return words[0]
         if len(words) == 2:
             return words[0] + ' ' + words[1]
@@ -931,6 +965,28 @@ def _parser():
     move_p.add_argument('--ft', type=int, required=True)
     move_p.add_argument('--difficult', action='store_true')
     move_p.add_argument('--as', dest='actor')
+
+    cast_p = sub.add_parser('cast', add_help=False)
+    cast_p.add_argument('id')
+    cast_p.add_argument('spell')
+    cast_p.add_argument('--targets', default='')
+    cast_p.add_argument('--slot', type=int)
+    cast_p.add_argument('--range', dest='reach', type=int)
+    cast_p.add_argument('--ritual', action='store_true')
+    cast_p.add_argument('--reaction', action='store_true')
+    cast_p.add_argument('--as', dest='actor')
+
+    rest_p = sub.add_parser('rest', add_help=False)
+    rest_sub = rest_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    short_p = rest_sub.add_parser('short', add_help=False)
+    short_p.add_argument('--spend', default='')
+    short_p.add_argument('--as', dest='actor')
+    long_p = rest_sub.add_parser('long', add_help=False)
+    long_p.add_argument('--as', dest='actor')
+    dice_p = rest_sub.add_parser('spend-hd', add_help=False)
+    dice_p.add_argument('id')
+    dice_p.add_argument('count', type=int)
+    dice_p.add_argument('--as', dest='actor')
     return parser
 
 
@@ -1267,6 +1323,61 @@ def cmd_move(args, explicit):
         result, event = combat.move_creature(state, args.id, args.ft, args.difficult, actor)
         saved, new_state = _commit(directory, event, state)
     return _ok('move', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_cast(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = spells.cast_spell(
+            state, args.id, args.spell, _ids(args.targets), args.slot, args.reach,
+            actor, args.ritual, args.reaction,
+        )
+        saved, new_state = _commit(directory, event, state)
+    return _ok('cast', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def _parse_spend(text):
+    pairs = []
+    for part in _ids(text):
+        if ':' not in part:
+            raise EngineError('BAD_ARGS', 'spend entries look like id:N', {'spend': part})
+        char_id, count = part.split(':', 1)
+        if not count.isdigit() or int(count) < 1:
+            raise EngineError('BAD_ARGS', 'hit dice count must be a positive number', {'spend': part})
+        pairs.append((char_id, int(count)))
+    return pairs
+
+
+def cmd_rest_short(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = spells.short_rest(state, _parse_spend(args.spend))
+        saved, new_state = _commit(directory, event, state)
+    return _ok('rest short', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_rest_long(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = spells.long_rest(state)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('rest long', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_spend_hd(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = spells.spend_hit_dice(state, args.id, args.count, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('rest spend-hd', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def _remove_tree(directory):

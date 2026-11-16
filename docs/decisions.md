@@ -52,4 +52,14 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - Players see monster hit points as `healthy`, `bloodied`, `dead`, or the character statuses. The event log keeps the number and `log` strips `target_hp` for anyone who is not the DM.
 - Help in combat makes the next ally attack against that target have advantage. Hide sets a Stealth total; the next attack by the hidden creature has advantage. Dodge imposes disadvantage on attacks against that creature until its next turn starts.
 - `--bonus` on Disengage or Hide is allowed only with Nimble Escape or Cunning Action.
-- `NO_SLOT` still waits for spellcasting in P4. Cast is not part of this phase.
+- `NO_SLOT` waits for spellcasting in P4.
+
+## P4
+
+- A spell is fully resolved when the SRD record already carries the numbers: instantaneous healing, instantaneous saves for half or no damage, and instantaneous spell attacks. Named extras are sleep (hit-point pool), shield (+5 AC until the caster's next turn), bless (+1d4, concentration), magic missile (automatic 1d4+1 darts), mage armor (13 + Dexterity), false life (temporary hit points), and guiding bolt (the attack, plus advantage on the next attack against that target). Acid arrow is manual because the record omits the end-of-turn damage. Anything else returns `effect: manual`, still spends the slot, and still takes concentration when the spell needs it.
+- Components are not checked. A focus or component pouch is assumed. `--range` is optional; omitting it means the cast is within the spell's range. A Self spell with an area uses the area size as the limit.
+- The bonus-action spell rule applies only during combat, and only until that creature's turn ends. A ritual cannot be cast in combat. A wizard may ritual-cast a spell from the spellbook without preparing it, and a ritual spends no slot.
+- Disciple of Life adds 2 + the slot level to healing from a spell of 1st level or higher. Cure wounds and healing word do nothing to undead and constructs.
+- Sleep does not reduce hit points. It applies unconscious, lowest current hit points first, and damage ends that sleep. Upcast sleep adds 2d8 per slot above 1st.
+- A short rest spends Arcane Recovery if a use remains and refills the lowest expended slots up to half the wizard level, rounded up. The use itself returns on a long rest. Second Wind and warlock spell slots return on a short rest. Hit dice heal the die plus Constitution, minimum 0. A long rest restores hit points, half the hit dice (minimum one), every spell slot, and short- or long-rest features, and reduces exhaustion by 1. Both rests are refused during combat. A dead character is not restored.
+- Spell slots of a level the caster does not have, or that are already expended, are `NO_SLOT`.

@@ -234,7 +234,7 @@ class CliTest(unittest.TestCase):
         reached = {
             'BAD_ARGS', 'NO_CAMPAIGN', 'UNKNOWN_ID', 'RULE_VIOLATION',
             'NOT_AUTHORIZED', 'LOG_TAMPERED', 'NOT_YOUR_TURN', 'NO_ACTION_LEFT',
-            'OUT_OF_RANGE', 'INVALID_TARGET', 'INCAPACITATED',
+            'OUT_OF_RANGE', 'INVALID_TARGET', 'INCAPACITATED', 'NO_SLOT',
         }
         self.assertEqual(set(ALL_CODES) - set(DEFERRED_CODES), reached)
 
