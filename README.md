@@ -2,7 +2,7 @@
 
 Local D&D 5e rules engine for the System Reference Document 5.1 (2014 rules).
 
-The engine uses the Python 3.11+ standard library only. SRD data is vendored under `engine/data/srd-5.1/`. The interface spec is `docs/engine-spec.md`.
+The engine uses the Python 3.11+ standard library only. SRD data is vendored under `engine/data/srd-5.1/`. The interface spec is `docs/engine-spec.md`. Choices where that spec is ambiguous are recorded in `docs/decisions.md`.
 
 ## Tests
 
