@@ -8,7 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+from dnd import adventure
 from dnd import combat
+from dnd import levelup
 from dnd.dice import roll_expr
 from dnd import spells
 from dnd.errors import EngineError, exit_code
@@ -32,7 +34,7 @@ _VALUE_FLAGS = {
     '--to', '--from', '--qty', '--slot', '--section', '--target',
     '--combatants', '--surprised', '--weapon', '--natural', '--range',
     '--cover', '--type', '--ft', '--duration', '--level', '--source',
-    '--targets', '--slot', '--spend',
+    '--targets', '--slot', '--spend', '--travel-hours', '--json-in',
 }
 
 COMMANDS = (
@@ -276,6 +278,66 @@ COMMANDS = (
         'who': 'owner or dm',
         'summary': 'Spend hit dice outside combat.',
     },
+    {
+        'name': 'adventure validate',
+        'usage': 'dnd adventure validate FILE',
+        'who': 'any',
+        'summary': 'Check that an adventure file\'s refs and DCs resolve.',
+    },
+    {
+        'name': 'look',
+        'usage': 'dnd look --as <actor>',
+        'who': 'any',
+        'summary': 'The current location. Players do not see dm_notes.',
+    },
+    {
+        'name': 'go',
+        'usage': 'dnd go <location> --as dm [--travel-hours N]',
+        'who': 'dm',
+        'summary': 'Take a connection. on_enter can spawn an encounter.',
+    },
+    {
+        'name': 'search',
+        'usage': 'dnd search <id> --as <owner>',
+        'who': 'owner or dm',
+        'summary': 'Look for hidden features and exits.',
+    },
+    {
+        'name': 'trap trigger',
+        'usage': 'dnd trap trigger <id> [--target <char>] --as dm',
+        'who': 'dm',
+        'summary': 'Set off a trap.',
+    },
+    {
+        'name': 'trap disarm',
+        'usage': 'dnd trap disarm <id> <char> --as <owner>',
+        'who': 'owner or dm',
+        'summary': 'Try to disarm a trap.',
+    },
+    {
+        'name': 'xp award',
+        'usage': 'dnd xp award <amount> [--to all|a,b] --as dm',
+        'who': 'dm',
+        'summary': 'Split experience evenly.',
+    },
+    {
+        'name': 'xp milestone',
+        'usage': 'dnd xp milestone <level> --as dm',
+        'who': 'dm',
+        'summary': 'Make a level available.',
+    },
+    {
+        'name': 'level up',
+        'usage': 'dnd level up <id> --as <owner> [--json-in FILE] [--roll]',
+        'who': 'owner or dm',
+        'summary': 'Advance one level, up to 5.',
+    },
+    {
+        'name': 'time advance',
+        'usage': 'dnd time advance <minutes> --as dm',
+        'who': 'dm',
+        'summary': 'Move the campaign clock.',
+    },
 )
 
 
@@ -380,6 +442,24 @@ def dispatch(argv):
         return cmd_rest_long(args, explicit)
     if group == 'rest' and verb == 'spend-hd':
         return cmd_spend_hd(args, explicit)
+    if group == 'adventure' and verb == 'validate':
+        return cmd_adventure_validate(args)
+    if group == 'look':
+        return cmd_look(args, explicit)
+    if group == 'go':
+        return cmd_go(args, explicit)
+    if group == 'search':
+        return cmd_search(args, explicit)
+    if group == 'trap':
+        return cmd_trap(args, explicit)
+    if group == 'time' and verb == 'advance':
+        return cmd_time(args, explicit)
+    if group == 'xp' and verb == 'award':
+        return cmd_xp_award(args, explicit)
+    if group == 'xp' and verb == 'milestone':
+        return cmd_xp_milestone(args, explicit)
+    if group == 'level' and verb == 'up':
+        return cmd_level_up(args, explicit)
     raise EngineError('BAD_ARGS', 'choose a command')
 
 
@@ -623,6 +703,7 @@ def _read_adventure(path_text):
             'only SRD 5.1 adventures are accepted',
             {'ruleset': ruleset},
         )
+    adventure.validate(data)
     start = data.get('start')
     if start is not None and not isinstance(start, str):
         raise EngineError('BAD_ARGS', 'adventure start must be a string')
@@ -746,7 +827,10 @@ def guess_cmd(argv):
         if token.startswith('--'):
             continue
         words.append(token)
-        if words[0] not in ('campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn', 'condition', 'rest'):
+        if words[0] not in (
+            'campaign', 'char', 'state', 'inv', 'combat', 'encounter', 'turn',
+            'condition', 'rest', 'adventure', 'trap', 'xp', 'level', 'time',
+        ):
             return words[0]
         if len(words) == 2:
             return words[0] + ' ' + words[1]
@@ -987,6 +1071,62 @@ def _parser():
     dice_p.add_argument('id')
     dice_p.add_argument('count', type=int)
     dice_p.add_argument('--as', dest='actor')
+
+    adventure_p = sub.add_parser('adventure', add_help=False)
+    adventure_sub = adventure_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    validate_p = adventure_sub.add_parser('validate', add_help=False)
+    validate_p.add_argument('file')
+
+    look_p = sub.add_parser('look', add_help=False)
+    look_p.add_argument('--as', dest='actor')
+
+    go_p = sub.add_parser('go', add_help=False)
+    go_p.add_argument('dest')
+    go_p.add_argument('--travel-hours', type=int)
+    go_p.add_argument('--as', dest='actor')
+
+    search_p = sub.add_parser('search', add_help=False)
+    search_p.add_argument('id')
+    search_p.add_argument('--as', dest='actor')
+
+    trap_p = sub.add_parser('trap', add_help=False)
+    trap_sub = trap_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    spot_p = trap_sub.add_parser('spot', add_help=False)
+    spot_p.add_argument('trap')
+    spot_p.add_argument('id')
+    spot_p.add_argument('--as', dest='actor')
+    trigger_p = trap_sub.add_parser('trigger', add_help=False)
+    trigger_p.add_argument('trap')
+    trigger_p.add_argument('--target')
+    trigger_p.add_argument('--as', dest='actor')
+    disarm_p = trap_sub.add_parser('disarm', add_help=False)
+    disarm_p.add_argument('trap')
+    disarm_p.add_argument('id')
+    disarm_p.add_argument('--as', dest='actor')
+
+    time_p = sub.add_parser('time', add_help=False)
+    time_sub = time_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    advance_p = time_sub.add_parser('advance', add_help=False)
+    advance_p.add_argument('minutes', type=int)
+    advance_p.add_argument('--as', dest='actor')
+
+    xp_p = sub.add_parser('xp', add_help=False)
+    xp_sub = xp_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    award_p = xp_sub.add_parser('award', add_help=False)
+    award_p.add_argument('amount', type=int)
+    award_p.add_argument('--to', default='all')
+    award_p.add_argument('--as', dest='actor')
+    mile_p = xp_sub.add_parser('milestone', add_help=False)
+    mile_p.add_argument('level', type=int)
+    mile_p.add_argument('--as', dest='actor')
+
+    level_p = sub.add_parser('level', add_help=False)
+    level_sub = level_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    up_p = level_sub.add_parser('up', add_help=False)
+    up_p.add_argument('id')
+    up_p.add_argument('--json-in')
+    up_p.add_argument('--roll', action='store_true')
+    up_p.add_argument('--as', dest='actor')
     return parser
 
 
@@ -1111,7 +1251,8 @@ def cmd_inv_give(args, explicit):
     directory, state = _with_campaign(explicit)
     with store.locked(directory):
         state, _prev = store.fold(store.read_events(directory))
-        _result, event = party.give_item(state, args.item, args.qty, args.to, args.from_char)
+        adventure = _read_adventure_doc(directory) if args.from_char and str(args.from_char).startswith('loot:') else None
+        _result, event = party.give_item(state, args.item, args.qty, args.to, args.from_char, adventure)
         saved, new_state = _commit(directory, event, state)
     return _ok('inv give', {'item': args.item, 'qty': args.qty, 'to': args.to}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
@@ -1378,6 +1519,115 @@ def cmd_spend_hd(args, explicit):
         result, event = spells.spend_hit_dice(state, args.id, args.count, actor)
         saved, new_state = _commit(directory, event, state)
     return _ok('rest spend-hd', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def _commit_many(directory, events, state):
+    saved = []
+    current = state
+    for event in events:
+        stored, current = _commit(directory, event, current)
+        saved.append(stored)
+    return saved, current
+
+
+def cmd_adventure_validate(args):
+    path = Path(args.file)
+    if not path.is_file():
+        raise EngineError('BAD_ARGS', 'adventure file does not exist', {'path': str(path)})
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        raise EngineError('BAD_ARGS', 'adventure file is not JSON') from exc
+    return _ok('adventure validate', adventure.validate(data), turn=None)
+
+
+def cmd_look(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    doc = _read_adventure_doc(directory)
+    return _ok('look', adventure.look(state, doc, actor), turn=store.turn_view(state))
+
+
+def cmd_go(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        doc = _read_adventure_doc(directory)
+        result, events = adventure.go(state, doc, args.dest, args.travel_hours, actor)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok('go', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
+
+
+def cmd_search(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        doc = _read_adventure_doc(directory)
+        result, events = adventure.search_location(state, doc, args.id, actor)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok('search', result, event_ids=[item['id'] for item in saved], rolls=saved[-1]['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_trap(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        doc = _read_adventure_doc(directory)
+        if args.verb == 'trigger':
+            _require_dm(actor)
+            result, events = adventure.trap_trigger(state, doc, args.trap, args.target)
+        elif args.verb == 'spot':
+            result, events = adventure.trap_spot(state, doc, args.trap, args.id, actor)
+        else:
+            result, events = adventure.trap_disarm(state, doc, args.trap, args.id, actor)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok(f'trap {args.verb}', result, event_ids=[item['id'] for item in saved], rolls=saved[-1]['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_time(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, events = adventure.advance_time(state, args.minutes)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok('time advance', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
+
+
+def cmd_xp_award(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        targets = _ids(args.to)
+        result, events = adventure.award_xp(state, args.amount, targets)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok('xp award', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
+
+
+def cmd_xp_milestone(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        doc = _read_adventure_doc(directory)
+        result, events = adventure.milestone(state, args.level, doc)
+        saved, new_state = _commit_many(directory, events, state)
+    return _ok('xp milestone', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
+
+
+def cmd_level_up(args, explicit):
+    actor = _require_actor(args.actor)
+    choices = _read_json(args.json_in) if args.json_in else {}
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = levelup.level_up(state, args.id, choices, args.roll, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('level up', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def _remove_tree(directory):

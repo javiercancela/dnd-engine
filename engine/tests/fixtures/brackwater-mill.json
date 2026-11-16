@@ -1,0 +1,194 @@
+{
+  "format": "dnd-adventure/1",
+  "id": "brackwater-mill",
+  "title": "The Mill at Brackwater",
+  "levels": [1, 2],
+  "ruleset": "srd-5.1",
+  "start": "mill-road",
+  "chapters": [
+    {
+      "id": "the-mill",
+      "title": "The Silent Wheel",
+      "summary_dm": "Goblins have taken the mill. Their leader is in the cellar.",
+      "locations": ["mill-road", "mill-yard", "mill-floor", "mill-cellar"]
+    }
+  ],
+  "locations": [
+    {
+      "id": "mill-road",
+      "name": "Mill Road",
+      "read_aloud": "A muddy lane climbs toward a watermill. The wheel is still, and no smoke rises from the chimney.",
+      "description_public": "The lane up to the mill.",
+      "dm_notes": "Nothing watches the road. The yard is where the goblins wait.",
+      "connections": [
+        {"to": "mill-yard", "label": "up the lane", "travel_minutes": 10}
+      ],
+      "features": [],
+      "on_enter": [],
+      "traps": [],
+      "treasure": [],
+      "npcs": []
+    },
+    {
+      "id": "mill-yard",
+      "name": "Mill Yard",
+      "read_aloud": "Broken carts slump beside a cold forge. Flour dust coats the stones.",
+      "description_public": "A yard of carts and a dead forge.",
+      "dm_notes": "Three goblins hide behind the carts. Tracks of a heavy creature lead to a cellar hatch under the woodpile.",
+      "connections": [
+        {"to": "mill-road", "label": "back down the lane", "travel_minutes": 10},
+        {"to": "mill-floor", "label": "the mill door", "travel_minutes": 1},
+        {"to": "mill-cellar", "label": "cellar hatch", "travel_minutes": 1, "hidden": {"dc": 12, "skill": "perception"}}
+      ],
+      "features": [
+        {
+          "id": "tracks",
+          "name": "Tracks",
+          "public": "Cart ruts and boot prints cross the yard.",
+          "hidden": {"dc": 12, "skill": "perception", "reveal": "A heavy set of tracks ends at a hatch under the woodpile."}
+        }
+      ],
+      "on_enter": [
+        {"spawn": "yard-ambush", "once": true, "start_combat": true}
+      ],
+      "traps": [],
+      "treasure": [],
+      "npcs": []
+    },
+    {
+      "id": "mill-floor",
+      "name": "Grinding Floor",
+      "read_aloud": "Millstones stand in a dim room. A man is tied to a beam, and the air smells of wet grain.",
+      "description_public": "The grinding room and a tied miller.",
+      "dm_notes": "Oswin is frightened but friendly. A loose millstone drops if anyone crosses the middle of the floor. He says the goblins answer to the big one below.",
+      "connections": [
+        {"to": "mill-yard", "label": "out to the yard", "travel_minutes": 1},
+        {"to": "mill-cellar", "label": "stairs down", "travel_minutes": 1}
+      ],
+      "features": [
+        {"id": "millstones", "name": "Millstones", "public": "Two round stones sit in a wooden frame."}
+      ],
+      "on_enter": [],
+      "traps": ["trap-millstone"],
+      "treasure": [],
+      "npcs": ["npc-oswin"]
+    },
+    {
+      "id": "mill-cellar",
+      "name": "Flour Cellar",
+      "read_aloud": "Damp sacks of flour slump against the walls. Water ticks somewhere in the dark.",
+      "description_public": "A low cellar stacked with flour sacks.",
+      "dm_notes": "The bugbear and two wolves lair here. The sack in the corner holds the mill's coin and two red vials.",
+      "connections": [
+        {"to": "mill-floor", "label": "stairs up", "travel_minutes": 1}
+      ],
+      "features": [
+        {"id": "sacks", "name": "Flour sacks", "public": "Most of the sacks are split and sour."}
+      ],
+      "on_enter": [
+        {"spawn": "cellar-boss", "once": true, "start_combat": true}
+      ],
+      "traps": [],
+      "treasure": ["tr-cellar"],
+      "npcs": []
+    }
+  ],
+  "encounters": [
+    {
+      "id": "yard-ambush",
+      "monsters": [{"ref": "srd:goblin", "count": 3}],
+      "xp_override": null,
+      "tactics_dm": "They wait behind the carts and loose arrows if the party hesitates.",
+      "surprise": {"stealth_vs_passive": true}
+    },
+    {
+      "id": "cellar-boss",
+      "monsters": [
+        {"ref": "srd:bugbear", "count": 1},
+        {"ref": "srd:wolf", "count": 2}
+      ],
+      "xp_override": null,
+      "tactics_dm": "The wolves rush the nearest foe. The bugbear follows.",
+      "surprise": {"stealth_vs_passive": false}
+    },
+    {
+      "id": "rat-nest",
+      "monsters": [{"ref": "custom:mill-rat-swarm", "count": 1}],
+      "xp_override": null,
+      "tactics_dm": "The swarm boils out of a split sack and bites the closest creature.",
+      "surprise": {"stealth_vs_passive": false}
+    }
+  ],
+  "custom_monsters": [
+    {
+      "id": "custom:mill-rat-swarm",
+      "name": "Mill Rat Swarm",
+      "stat_block": {
+        "name": "Mill Rat Swarm",
+        "size": "Medium",
+        "type": "beast",
+        "armor_class": [{"type": "dex", "value": 10}],
+        "hit_points": 20,
+        "hit_points_roll": "5d8",
+        "speed": {"walk": "30 ft."},
+        "strength": 9,
+        "dexterity": 11,
+        "constitution": 9,
+        "intelligence": 2,
+        "wisdom": 10,
+        "charisma": 3,
+        "challenge_rating": 0.25,
+        "xp": 50,
+        "actions": [
+          {
+            "name": "Bites",
+            "desc": "Melee Weapon Attack: +2 to hit, reach 0 ft., one target in the swarm's space. Hit: 7 (2d6) piercing damage.",
+            "attack_bonus": 2,
+            "damage": [
+              {"damage_dice": "2d6", "damage_type": {"index": "piercing"}}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc-oswin",
+      "name": "Oswin",
+      "public": "A flour-dusted man tied to a beam. He whispers that the goblins answer to the big one below.",
+      "dm_only": "Oswin will bar the mill door if the party frees him. He has no weapon.",
+      "stat_ref": "srd:commoner",
+      "attitude": "friendly"
+    }
+  ],
+  "traps": [
+    {
+      "id": "trap-millstone",
+      "name": "Loose Millstone",
+      "detect": {"skill": "perception", "dc": 13},
+      "disarm": {"skill": "athletics", "dc": 12},
+      "effect": {
+        "save": {"ability": "dex", "dc": 12, "half": true},
+        "damage": "2d6",
+        "type": "bludgeoning",
+        "condition": null
+      }
+    }
+  ],
+  "treasure": [
+    {
+      "id": "tr-cellar",
+      "coins": {"gp": 40},
+      "items": [
+        {"ref": "srd:potion-of-healing", "qty": 2},
+        {"ref": "srd:spell-scroll-1st", "qty": 1}
+      ],
+      "hidden": null
+    }
+  ],
+  "xp": {
+    "mode": "per-monster",
+    "milestones": [{"after": "cellar-boss", "level": 2}]
+  }
+}
