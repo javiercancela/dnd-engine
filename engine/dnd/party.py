@@ -1,5 +1,7 @@
 """Character commands: create, checks, inventory."""
 
+import copy
+
 from dnd.chargen import (
     ABILITIES,
     ability_mod,
@@ -311,8 +313,10 @@ def show_inventory(state, char_id, actor):
     }
 
 
-def give_item(state, item, qty, target_id, source):
+def give_item(state, item, qty, target_id, source, adventure=None):
     target = _ready(state, target_id)
+    if source and source.startswith('loot:'):
+        return _give_loot(state, item, qty, target, source.split(':', 1)[1], adventure)
     if item in COIN_KINDS:
         return _give_coins(state, target, item, qty, source)
     _known_item(item)
@@ -492,6 +496,48 @@ def _give_coins(state, target, kind, qty, source):
         pairs,
         'dm',
     )
+
+
+def _give_loot(state, item, qty, target, treasure_id, adventure):
+    if adventure is None:
+        rule('that loot is not in this adventure', treasure=treasure_id)
+    treasure = next((row for row in adventure.get('treasure') or [] if row.get('id') == treasure_id), None)
+    if treasure is None:
+        raise EngineError('UNKNOWN_ID', f'unknown treasure {treasure_id}', {'treasure': treasure_id})
+    progress = copy.deepcopy(state.get('adventure') or {})
+    taken = progress.setdefault('loot', {}).setdefault(treasure_id, {'coins': {}, 'items': {}})
+    updated = _copy_character(target)
+    if item in COIN_KINDS:
+        have = (treasure.get('coins') or {}).get(item, 0) - taken['coins'].get(item, 0)
+        if qty > have:
+            rule('that treasure does not have enough coin', coin=item, have=have)
+        taken['coins'][item] = taken['coins'].get(item, 0) + qty
+        updated['coins'][item] = updated['coins'].get(item, 0) + qty
+    else:
+        _known_item(item)
+        have = 0
+        for entry in treasure.get('items') or []:
+            ref = entry.get('ref') or ''
+            slug = ref.split(':', 1)[1] if ref.startswith('srd:') else ref
+            if slug == item:
+                have += entry.get('qty', 1)
+        have -= taken['items'].get(item, 0)
+        if qty > have:
+            rule('that treasure does not have enough of that item', item=item, have=have)
+        taken['items'][item] = taken['items'].get(item, 0) + qty
+        _add_item(updated, item, qty)
+    changes = [
+        {'op': 'set', 'path': f'characters.{target["id"]}', 'from': target, 'to': updated},
+        {'op': 'set', 'path': 'adventure', 'from': state.get('adventure'), 'to': progress},
+    ]
+    event = _event(
+        'inv-give',
+        'dm',
+        f'inv give {item} --to {target["id"]} --qty {qty} --from loot:{treasure_id} --as dm',
+        [],
+        changes,
+    )
+    return {'item': item, 'qty': qty, 'treasure': treasure_id}, event
 
 
 def _item_event(event_type, cmd, pairs, actor):

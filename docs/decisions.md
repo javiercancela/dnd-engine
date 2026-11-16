@@ -63,3 +63,13 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - Sleep does not reduce hit points. It applies unconscious, lowest current hit points first, and damage ends that sleep. Upcast sleep adds 2d8 per slot above 1st.
 - A short rest spends Arcane Recovery if a use remains and refills the lowest expended slots up to half the wizard level, rounded up. The use itself returns on a long rest. Second Wind and warlock spell slots return on a short rest. Hit dice heal the die plus Constitution, minimum 0. A long rest restores hit points, half the hit dice (minimum one), every spell slot, and short- or long-rest features, and reduces exhaustion by 1. Both rests are refused during combat. A dead character is not restored.
 - Spell slots of a level the caster does not have, or that are already expended, are `NO_SLOT`.
+
+## P5
+
+- `campaign new` runs adventure validation. A minimal adventure with one location still passes. DCs must be integers. `custom:` monsters are accepted only when the adventure defines them.
+- `search` rolls Perception and Investigation once each and reveals every hidden feature or exit whose skill meets the DC. A hidden connection cannot be used until then. The mill cellar is also reached by the grinding-room stairs.
+- Yard and cellar `on_enter` hooks spawn the encounter once and start combat. Goblin surprise is one Stealth roll against the party's highest passive Perception. It surprises the party only when the roll is higher.
+- Experience from a fight is split when that fight ends, and the remainder of that split is dropped. Three goblins give 37 each and the cellar gives 75 each, which is 112 each. A milestone can make a level available before the XP table does. Level-up is one level at a time, and only while the character is below the available level, capped at 5.
+- Hit points on level-up use the average (rounded up) plus Constitution, and Dwarven Toughness adds 1. An ability increase that changes Constitution also adds or removes 1 hit point per level the character has reached. Extra Attack, invocations, metamagic, and a hunter's prey option are recorded on the sheet; the attack command does not swing twice yet.
+- A wizard adds two spellbook spells per level. Other casters add spells to match `spells_known`. A circle's bonus cantrip is the feature, not an extra cantrip slot.
+- `time advance` moves the clock and clears round-duration conditions. Treasure is taken item by item from `loot:<id>`.
