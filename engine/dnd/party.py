@@ -199,9 +199,15 @@ def roll_check(state, char_id, which, dc, actor, flag_adv, flag_dis, help_from, 
         natural = rolled['kept'][0]
         bonus = _bonus_for(character, which) if not saving else save_bonus(character, which)
         total = natural + bonus
-        outcome = {'total': total, 'dc': dc, 'success': total >= dc, 'natural': natural}
         rolls = [_roll_record(which, counter, rolled, mode, sources, bonus, total, '1d20')]
-        changes = [_counter_change(counter, counter + 1)]
+        counter += 1
+        if saving and character.get('blessed'):
+            bless_roll = roll_expr('1d4', state['rng']['seed'], counter, 'none')
+            total += bless_roll['kept'][0]
+            rolls.append(_roll_record(which, counter, bless_roll, 'none', ['bless'], 0, bless_roll['kept'][0], '1d4'))
+            counter += 1
+        outcome = {'total': total, 'dc': dc, 'success': total >= dc, 'natural': natural}
+        changes = [_counter_change(state['rng']['counter'], counter)]
     cmd = _check_cmd(roll_kind, char_id, which, dc, actor, flag_adv, flag_dis, help_from, secret_dc)
     event = _event(roll_kind if roll_kind == 'save' else 'check', actor, cmd, rolls, changes)
     event['outcome'] = outcome

@@ -3,7 +3,7 @@
 import copy
 import re
 
-from dnd.chargen import ability_mod, condition_names, rule, status_of
+from dnd.chargen import ability_mod, advantage_state, condition_names, rule, status_of
 from dnd.dice import roll_expr
 from dnd.errors import EngineError
 from dnd import srd
@@ -134,6 +134,10 @@ def end_turn(state, actor):
     _assert_turn_owner(state, actor, current)
     new_state = _copy(state)
     rolls = _tick_creature(new_state, current)
+    economy = (new_state.get('combat') or {}).get('economy', {}).get(current)
+    if economy:
+        economy['bonus_spell'] = False
+        economy['leveled_action'] = False
     combat = new_state['combat']
     surprised = combat.get('surprised') or []
     finished = combat.get('surprised_done') or []
@@ -228,14 +232,30 @@ def attack(state, attacker_id, target_id, weapon, natural, declared_range, actor
     counter += 1
     natural_roll = rolled['kept'][0]
     bonus = attack_row['bonus']
-    total = natural_roll + bonus
+    bless = 0
+    if attacker.get('blessed'):
+        bless_roll = roll_expr('1d4', seed, counter, 'none')
+        bless = bless_roll['kept'][0]
+        counter += 1
+    else:
+        bless_roll = None
+    total = natural_roll + bonus + bless
     ac = _ac_of(target) + COVER_AC.get(cover or '', 0)
     crit = natural_roll == 20
     hit = natural_roll != 1 and (crit or total >= ac)
     if hit and declared_range <= 5 and set(condition_names(target)).intersection(('paralyzed', 'unconscious')):
         crit = True
     damages = []
-    roll_records = [_d20_record(attacker_id, counter - 1, rolled, bonus, total)]
+    conc = None
+    if target.get('guiding_bolt'):
+        target['guiding_bolt'] = False
+    roll_records = [_d20_record(attacker_id, counter - 1 - (1 if bless_roll else 0), rolled, bonus, natural_roll + bonus)]
+    if bless_roll:
+        roll_records.append({
+            'adv': 'none', 'adv_sources': ['bless'], 'counter': counter - 1,
+            'dice': bless_roll['dice'], 'expr': '1d4', 'kept': bless_roll['kept'],
+            'label': 'bless', 'mod': 0, 'total': bless,
+        })
     if hit:
         for part in attack_row.get('parts') or [{'dice': attack_row['damage'], 'type': attack_row['damage_type']}]:
             expr = _crit_expr(part['dice']) if crit else part['dice']
@@ -249,6 +269,10 @@ def attack(state, attacker_id, target_id, weapon, natural, declared_range, actor
                 'label': part['type'], 'mod': damage_roll['mod'], 'total': amount,
             })
         _apply_damage_parts(new_state, target, damages, crit)
+        new_state['rng']['counter'] = counter
+        conc_rolls, conc = check_concentration(new_state, target, sum(part['amount'] for part in damages))
+        roll_records.extend(conc_rolls)
+        counter = new_state['rng']['counter']
         attacker['hidden'] = False
         help_map = new_state['combat'].setdefault('help', {})
         help_map.pop(target_id, None)
@@ -262,12 +286,17 @@ def attack(state, attacker_id, target_id, weapon, natural, declared_range, actor
         'damage': damages,
         'target_status': _health_word(target),
     }
+    if conc:
+        result['concentration'] = {key: conc[key] for key in ('dc', 'total', 'success', 'broken') if key in conc}
     changes = [
         {'op': 'set', 'path': 'combat', 'from': state.get('combat'), 'to': new_state['combat']},
         _counter(state['rng']['counter'], counter),
         _creature_change(state, new_state, attacker_id),
         _creature_change(state, new_state, target_id),
     ]
+    for creature_id in (conc or {}).get('cleared') or []:
+        if creature_id not in (attacker_id, target_id):
+            changes.append(_creature_change(state, new_state, creature_id))
     label = weapon or natural
     event = _event(
         'attack', actor,
@@ -294,10 +323,18 @@ def deal_damage(state, target_id, expr, damage_type, source):
     amount = _mitigate(target, damage_type, max(0, amount))
     _apply_damage_parts(new_state, target, [{'type': damage_type, 'amount': amount}], False)
     new_state['rng']['counter'] = counter
+    conc_rolls, conc = check_concentration(new_state, target, amount)
+    rolls.extend(conc_rolls)
+    counter = new_state['rng']['counter']
     changes = [_creature_change(state, new_state, target_id)]
+    for creature_id in (conc or {}).get('cleared') or []:
+        if creature_id != target_id:
+            changes.append(_creature_change(state, new_state, creature_id))
     if counter != state['rng']['counter']:
         changes.append(_counter(state['rng']['counter'], counter))
     result = {'amount': amount, 'type': damage_type, 'target_status': _health_word(target)}
+    if conc:
+        result['concentration'] = {key: conc[key] for key in ('dc', 'total', 'success', 'broken') if key in conc}
     event = _event('damage', 'dm', f'damage {target_id} {expr} --type {damage_type} --as dm', rolls, changes)
     event['outcome'] = dict(result)
     event['outcome']['target_hp'] = copy.deepcopy(target.get('hp'))
@@ -439,6 +476,8 @@ def take_action(state, actor_id, verb, target_id, actor, bonus, trigger):
     _assert_turn_owner(state, actor, actor_id)
     if _incapacitated(creature):
         raise EngineError('INCAPACITATED', f'{actor_id} cannot act', {'id': actor_id})
+    if verb == 'second-wind':
+        return _second_wind(state, actor_id, actor)
     if verb not in ('dash', 'disengage', 'dodge', 'help', 'hide', 'ready', 'search', 'use-object'):
         raise EngineError('BAD_ARGS', f'unknown action {verb}', {'action': verb})
     use_bonus = bool(bonus)
@@ -528,6 +567,11 @@ def _begin_turn(state, creature_id):
     creature = _require_creature(state, creature_id)
     creature['dodging'] = False
     creature['disengaged'] = False
+    creature['shield_spell'] = False
+    for bucket in (state.get('characters') or {}, state.get('monsters') or {}):
+        for other in bucket.values():
+            if other.get('no_heal_caster') == creature_id:
+                other['no_heal_caster'] = None
     surprised = creature_id in (state['combat'].get('surprised') or []) and creature_id not in (state['combat'].get('surprised_done') or [])
     if surprised or _is_dead(creature):
         economy = {'action': False, 'bonus': False, 'reaction': False, 'movement_ft': 0}
@@ -620,6 +664,8 @@ def _attack_advantage(state, attacker, target, attack_row, declared, normal, ran
         adv.append('invisible')
     if attacker.get('hidden'):
         adv.append('hidden')
+    if target.get('guiding_bolt'):
+        adv.append('guiding-bolt')
     helper = (state.get('combat') or {}).get('help', {}).get(_id_of(target))
     if helper and helper != _id_of(attacker):
         adv.append(f'help:{helper}')
@@ -628,6 +674,8 @@ def _attack_advantage(state, attacker, target, attack_row, declared, normal, ran
 
 def _apply_damage_parts(state, target, damages, crit):
     total = sum(part['amount'] for part in damages)
+    if total > 0:
+        _wake_sleep(target)
     was_down = target['hp']['current'] <= 0
     leftover = _soak(target, total)
     is_monster = target.get('ref') or target.get('id') in (state.get('monsters') or {})
@@ -718,6 +766,7 @@ def _make_monster(monster_id, ref, block, encounter_id, roll_hp, seed, counter):
         'conditions': [],
         'exhaustion': 0,
         'dead': False,
+        'type': block.get('type') or 'unknown',
         'special': [row.get('name') for row in block.get('special_abilities') or [] if row.get('name')],
     }
     return monster, counter, rolls
@@ -962,9 +1011,127 @@ def _speed(creature):
 
 
 def _ac_of(creature):
-    if creature.get('ac') is not None and creature.get('ref'):
-        return creature['ac']
-    return creature.get('ac') or 10
+    if creature.get('mage_armor') and not _wearing_armor(creature):
+        ac = 13 + ability_mod(_dex_score(creature))
+    elif creature.get('ac') is not None:
+        ac = creature['ac']
+    else:
+        ac = 10
+    if creature.get('shield_spell'):
+        ac += 5
+    return ac
+
+
+def _wearing_armor(creature):
+    for entry in creature.get('inventory') or []:
+        if entry.get('equipped') == 'armor':
+            return True
+    return False
+
+
+def check_concentration(state, creature, amount):
+    """Roll the concentration save after damage. Mutates state."""
+    casting = creature.get('spellcasting') or {}
+    if not casting.get('concentration') or amount <= 0:
+        if creature.get('dead') and casting.get('concentration'):
+            return [], {'broken': True, 'reason': 'dead', 'cleared': _clear_concentration(state, creature)}
+        return [], None
+    dc = max(10, amount // 2)
+    counter = state['rng']['counter']
+    seed = state['rng']['seed']
+    mode, sources, _warnings = advantage_state(creature, 'save', 'con', False, False, None)
+    rolled = roll_expr('1d20', seed, counter, mode)
+    counter += 1
+    bless = 0
+    bless_roll = None
+    if creature.get('blessed'):
+        bless_roll = roll_expr('1d4', seed, counter, 'none')
+        bless = bless_roll['kept'][0]
+        counter += 1
+    state['rng']['counter'] = counter
+    bonus = _save_bonus(creature, 'con')
+    total = rolled['kept'][0] + bonus + bless
+    rolls = [_d20_record(creature.get('id'), counter - 1 - (1 if bless_roll else 0), rolled, bonus, rolled['kept'][0] + bonus)]
+    if bless_roll:
+        rolls.append({
+            'adv': 'none', 'adv_sources': ['bless'], 'counter': counter - 1,
+            'dice': bless_roll['dice'], 'expr': '1d4', 'kept': bless_roll['kept'],
+            'label': 'bless', 'mod': 0, 'total': bless,
+        })
+    success = total >= dc and not creature.get('dead')
+    cleared = []
+    if not success or creature.get('dead'):
+        cleared = _clear_concentration(state, creature)
+        success = False
+    return rolls, {
+        'dc': dc, 'total': total, 'success': success, 'broken': not success, 'cleared': cleared,
+    }
+
+
+def _clear_concentration(state, creature):
+    casting = creature.get('spellcasting') or {}
+    conc = casting.get('concentration')
+    if not conc:
+        return []
+    touched = []
+    creature_id = creature.get('id')
+    if creature_id:
+        touched.append(creature_id)
+    for target_id in conc.get('targets') or []:
+        other = (state.get('characters') or {}).get(target_id) or (state.get('monsters') or {}).get(target_id)
+        if other is None:
+            continue
+        if conc.get('spell') == 'bless':
+            other['blessed'] = False
+        if target_id not in touched:
+            touched.append(target_id)
+    casting['concentration'] = None
+    return touched
+
+
+def _wake_sleep(creature):
+    kept = []
+    for row in _condition_rows(creature):
+        if row.get('index') == 'unconscious' and row.get('source') == 'sleep':
+            continue
+        kept.append(row)
+    creature['conditions'] = kept
+
+
+def _second_wind(state, actor_id, actor):
+    creature = _require_creature(state, actor_id)
+    feature = next((row for row in creature.get('features') or [] if row.get('id') == 'second-wind'), None)
+    if feature is None:
+        rule('no Second Wind', id=actor_id)
+    if feature.get('uses', 0) < 1:
+        rule('Second Wind is expended', id=actor_id)
+    _assert_economy(state, actor_id, 'bonus')
+    new_state = _copy(state)
+    creature = _require_creature(new_state, actor_id)
+    feature = next(row for row in creature['features'] if row.get('id') == 'second-wind')
+    counter = new_state['rng']['counter']
+    rolled = roll_expr('1d10', new_state['rng']['seed'], counter, 'none')
+    amount = max(0, rolled['total'] + creature.get('level', 1))
+    current = max(0, creature['hp']['current'])
+    creature['hp']['current'] = min(creature['hp']['max'], current + amount)
+    if creature['hp']['current'] > 0:
+        creature['stable'] = False
+        creature['death_saves'] = {'s': 0, 'f': 0}
+    feature['uses'] = 0
+    _spend(new_state, actor_id, 'bonus')
+    new_state['rng']['counter'] = counter + 1
+    changes = [
+        {'op': 'set', 'path': 'combat', 'from': state.get('combat'), 'to': new_state['combat']},
+        _creature_change(state, new_state, actor_id),
+        _counter(counter, counter + 1),
+    ]
+    event = _event('action', actor, f'action {actor_id} second-wind --as {actor}', [{
+        'adv': 'none', 'adv_sources': [], 'counter': counter, 'dice': rolled['dice'],
+        'expr': '1d10', 'kept': rolled['kept'], 'label': 'second-wind', 'mod': creature.get('level', 1),
+        'total': amount,
+    }], changes)
+    event['outcome'] = {'action': 'second-wind', 'amount': amount, 'hp': creature['hp']['current']}
+    return event['outcome'], event
 
 
 def _health_word(creature):

@@ -99,6 +99,7 @@ def compile_character(data, base_scores):
         'modifiers': {ability: ability_mod(final[ability]) for ability in ABILITIES},
         'proficiency_bonus': 2,
         'hp': {'max': 0, 'current': 0, 'temp': 0},
+        'hit_die': class_record['hit_die'],
         'hit_dice': {f'd{class_record["hit_die"]}': 1},
         'speed': base_race.get('speed') or 30,
         'base_speed': base_race.get('speed') or 30,
@@ -900,6 +901,8 @@ def status_of(character):
         return 'pending'
     if character.get('dead'):
         return 'dead'
+    if 'unconscious' in condition_names(character):
+        return 'unconscious'
     current = character['hp']['current']
     if current <= 0:
         return 'stable' if character.get('stable') else 'dying'
