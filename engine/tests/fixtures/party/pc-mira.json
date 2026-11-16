@@ -1,0 +1,14 @@
+{
+  "id": "pc-mira",
+  "name": "Mira",
+  "player": "javi",
+  "race": "high-elf",
+  "class": "wizard",
+  "background": "acolyte",
+  "abilities": {"method": "standard-array", "str": 8, "dex": 14, "con": 13, "int": 15, "wis": 12, "cha": 10},
+  "skills": ["arcana", "investigation"],
+  "languages": ["draconic", "celestial", "sylvan"],
+  "spells_known": ["fire-bolt", "mage-hand", "light", "prestidigitation", "magic-missile", "shield", "sleep", "burning-hands", "detect-magic", "mage-armor"],
+  "spells_prepared": ["magic-missile", "shield", "sleep", "mage-armor"],
+  "equipment_choice": "default"
+}

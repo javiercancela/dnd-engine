@@ -1,0 +1,14 @@
+{
+  "id": "pc-tor",
+  "name": "Tor",
+  "player": "bot:tor",
+  "race": "hill-dwarf",
+  "class": "fighter",
+  "background": "acolyte",
+  "abilities": {"method": "standard-array", "str": 15, "dex": 12, "con": 14, "int": 8, "wis": 13, "cha": 10},
+  "skills": ["athletics", "perception"],
+  "languages": ["giant", "gnomish"],
+  "tool": "smiths-tools",
+  "fighting_style": "defense",
+  "equipment_choice": "default"
+}

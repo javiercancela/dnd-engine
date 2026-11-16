@@ -308,9 +308,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), before)
         code, listed = self.invoke(('help',))
         names = [command['name'] for command in listed['result']['commands']]
-        self.assertEqual(names, [
+        for name in (
             'campaign new', 'campaign load', 'campaign info', 'verify', 'roll', 'log', 'help',
-        ])
+        ):
+            self.assertIn(name, names)
         code, one = self.invoke(('help', 'roll'))
         self.assertEqual(code, 0)
         self.assertEqual(one['result']['commands'][0]['name'], 'roll')

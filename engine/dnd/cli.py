@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dnd.dice import roll_expr
 from dnd.errors import EngineError, exit_code
+from dnd import party
 from dnd import store
 
 # Verbatim SRD 5.1 attribution. tests/test_p1.py checks it against NOTICE.md.
@@ -25,7 +26,8 @@ _ACTOR = re.compile(r'^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$')
 
 _VALUE_FLAGS = {
     '--campaign', '--adventure', '--seed', '--as', '--reason',
-    '--last', '--since', '--type',
+    '--last', '--since', '--type', '--json-in', '--dc', '--help-from',
+    '--to', '--from', '--qty', '--slot', '--section', '--target',
 }
 
 COMMANDS = (
@@ -71,6 +73,96 @@ COMMANDS = (
         'who': 'any; --as is optional',
         'summary': 'List commands. --about prints the SRD attribution.',
     },
+    {
+        'name': 'char create',
+        'usage': 'dnd char create --json-in FILE --as dm',
+        'who': 'dm',
+        'summary': 'Build a level-1 SRD character.',
+    },
+    {
+        'name': 'char assign-scores',
+        'usage': 'dnd char assign-scores <id> --json-in FILE --as <owner|dm>',
+        'who': 'owner or dm',
+        'summary': 'Assign a rolled ability pool.',
+    },
+    {
+        'name': 'char show',
+        'usage': 'dnd char show <id> --as <actor>',
+        'who': 'owner or dm see the full sheet; others see a public view',
+        'summary': 'Show one character.',
+    },
+    {
+        'name': 'char list',
+        'usage': 'dnd char list --as <actor>',
+        'who': 'any',
+        'summary': 'Party roster and seats.',
+    },
+    {
+        'name': 'state show',
+        'usage': 'dnd state show --as <actor> [--section party|location|combat|all]',
+        'who': 'any',
+        'summary': 'Filtered campaign snapshot.',
+    },
+    {
+        'name': 'check',
+        'usage': 'dnd check <char> <ability|skill> --dc N --as <owner|dm> [--adv|--dis] [--help-from ID] [--secret-dc]',
+        'who': 'owner or dm',
+        'summary': 'Ability or skill check.',
+    },
+    {
+        'name': 'save',
+        'usage': 'dnd save <id> <ability> --dc N --as <owner|dm> [--adv|--dis]',
+        'who': 'owner or dm',
+        'summary': 'Saving throw.',
+    },
+    {
+        'name': 'contest',
+        'usage': 'dnd contest <a> <skill> <b> <skill> --as dm',
+        'who': 'dm',
+        'summary': 'Opposed check.',
+    },
+    {
+        'name': 'group-check',
+        'usage': 'dnd group-check <skill> --dc N --as dm',
+        'who': 'dm',
+        'summary': 'Party check. Succeeds when half or more succeed.',
+    },
+    {
+        'name': 'inv show',
+        'usage': 'dnd inv show <char> --as <owner|dm>',
+        'who': 'owner or dm',
+        'summary': 'Items, coins, weight, and attunement.',
+    },
+    {
+        'name': 'inv give',
+        'usage': 'dnd inv give <item> --to <char> [--qty N] [--from <char>|loot:<id>] --as dm',
+        'who': 'dm',
+        'summary': 'Give an item or coins.',
+    },
+    {
+        'name': 'inv transfer',
+        'usage': 'dnd inv transfer <item> <from> <to> [--qty N] --as <from>',
+        'who': 'the character handing the item over',
+        'summary': 'Hand an item or coins to another character.',
+    },
+    {
+        'name': 'equip',
+        'usage': 'dnd equip <char> <item> [--slot main|off|armor|shield] --as <owner|dm>',
+        'who': 'owner or dm',
+        'summary': 'Equip an item and recompute AC and attacks.',
+    },
+    {
+        'name': 'unequip',
+        'usage': 'dnd unequip <char> <item> --as <owner|dm>',
+        'who': 'owner or dm',
+        'summary': 'Unequip an item and recompute AC and attacks.',
+    },
+    {
+        'name': 'use',
+        'usage': 'dnd use <char> <item> [--target ID] --as <owner|dm>',
+        'who': 'owner or dm',
+        'summary': 'Use a potion or other consumable.',
+    },
 )
 
 
@@ -111,6 +203,36 @@ def dispatch(argv):
         return cmd_log(args, explicit)
     if group == 'help':
         return cmd_help(args)
+    if group == 'char' and verb == 'create':
+        return cmd_char_create(args, explicit)
+    if group == 'char' and verb == 'assign-scores':
+        return cmd_char_assign(args, explicit)
+    if group == 'char' and verb == 'show':
+        return cmd_char_show(args, explicit)
+    if group == 'char' and verb == 'list':
+        return cmd_char_list(args, explicit)
+    if group == 'state' and verb == 'show':
+        return cmd_state_show(args, explicit)
+    if group == 'check':
+        return cmd_check(args, explicit, saving=False)
+    if group == 'save':
+        return cmd_check(args, explicit, saving=True)
+    if group == 'contest':
+        return cmd_contest(args, explicit)
+    if group == 'group-check':
+        return cmd_group_check(args, explicit)
+    if group == 'inv' and verb == 'show':
+        return cmd_inv_show(args, explicit)
+    if group == 'inv' and verb == 'give':
+        return cmd_inv_give(args, explicit)
+    if group == 'inv' and verb == 'transfer':
+        return cmd_inv_transfer(args, explicit)
+    if group == 'equip':
+        return cmd_equip(args, explicit)
+    if group == 'unequip':
+        return cmd_unequip(args, explicit)
+    if group == 'use':
+        return cmd_use(args, explicit)
     raise EngineError('BAD_ARGS', 'choose a command')
 
 
@@ -271,6 +393,9 @@ def cmd_roll(args, explicit):
             'rolls': [record],
             'type': 'roll',
         }
+        relay = party.relay_for(state, actor)
+        if relay:
+            event['relayed_by'] = relay
         if args.reason:
             event['reason'] = args.reason
         if args.secret:
@@ -307,7 +432,7 @@ def cmd_log(args, explicit):
     if args.last is not None:
         rows = rows[-args.last:]
     if actor != 'dm':
-        rows = [_redact(event) for event in rows]
+        rows = [_redact(event, actor) for event in rows]
     return _ok('log', {'events': rows}, turn=store.turn_view(state))
 
 
@@ -378,14 +503,18 @@ def _advantage(adv, dis):
     return 'none', [], []
 
 
-def _redact(event):
-    if not event.get('secret'):
-        return event
+def _redact(event, actor):
     hidden = dict(event)
-    hidden['rolls'] = [
-        {'counter': roll.get('counter'), 'secret': True}
-        for roll in event.get('rolls') or []
-    ]
+    if event.get('secret'):
+        hidden['rolls'] = [
+            {'counter': roll.get('counter'), 'secret': True}
+            for roll in event.get('rolls') or []
+        ]
+    if actor != 'dm' and event.get('secret_dc') and isinstance(hidden.get('outcome'), dict):
+        outcome = dict(hidden['outcome'])
+        outcome.pop('dc', None)
+        outcome.pop('success', None)
+        hidden['outcome'] = outcome
     return hidden
 
 
@@ -468,10 +597,10 @@ def guess_cmd(argv):
         if token.startswith('--'):
             continue
         words.append(token)
-        if words[0] != 'campaign':
+        if words[0] not in ('campaign', 'char', 'state', 'inv'):
             return words[0]
         if len(words) == 2:
-            return 'campaign ' + words[1]
+            return words[0] + ' ' + words[1]
     if words:
         return ' '.join(words)
     return 'dnd'
@@ -517,7 +646,261 @@ def _parser():
     help_p = sub.add_parser('help', add_help=False)
     help_p.add_argument('topic', nargs='*')
     help_p.add_argument('--about', action='store_true')
+
+    char = sub.add_parser('char', add_help=False)
+    char_sub = char.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    create_p = char_sub.add_parser('create', add_help=False)
+    create_p.add_argument('--json-in', required=True)
+    create_p.add_argument('--as', dest='actor')
+    assign_p = char_sub.add_parser('assign-scores', add_help=False)
+    assign_p.add_argument('id')
+    assign_p.add_argument('--json-in', required=True)
+    assign_p.add_argument('--as', dest='actor')
+    show_p = char_sub.add_parser('show', add_help=False)
+    show_p.add_argument('id')
+    show_p.add_argument('--as', dest='actor')
+    list_p = char_sub.add_parser('list', add_help=False)
+    list_p.add_argument('--as', dest='actor')
+
+    state_p = sub.add_parser('state', add_help=False)
+    state_sub = state_p.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    state_show = state_sub.add_parser('show', add_help=False)
+    state_show.add_argument('--as', dest='actor')
+    state_show.add_argument('--section')
+
+    check_p = sub.add_parser('check', add_help=False)
+    check_p.add_argument('id')
+    check_p.add_argument('which')
+    check_p.add_argument('--dc', type=int, required=True)
+    check_p.add_argument('--as', dest='actor')
+    check_p.add_argument('--adv', action='store_true')
+    check_p.add_argument('--dis', action='store_true')
+    check_p.add_argument('--help-from')
+    check_p.add_argument('--secret-dc', action='store_true')
+
+    save_p = sub.add_parser('save', add_help=False)
+    save_p.add_argument('id')
+    save_p.add_argument('which')
+    save_p.add_argument('--dc', type=int, required=True)
+    save_p.add_argument('--as', dest='actor')
+    save_p.add_argument('--adv', action='store_true')
+    save_p.add_argument('--dis', action='store_true')
+
+    contest_p = sub.add_parser('contest', add_help=False)
+    contest_p.add_argument('left')
+    contest_p.add_argument('left_skill')
+    contest_p.add_argument('right')
+    contest_p.add_argument('right_skill')
+    contest_p.add_argument('--as', dest='actor')
+
+    group_p = sub.add_parser('group-check', add_help=False)
+    group_p.add_argument('skill')
+    group_p.add_argument('--dc', type=int, required=True)
+    group_p.add_argument('--as', dest='actor')
+
+    inv = sub.add_parser('inv', add_help=False)
+    inv_sub = inv.add_subparsers(dest='verb', required=True, parser_class=JsonParser)
+    inv_show = inv_sub.add_parser('show', add_help=False)
+    inv_show.add_argument('id')
+    inv_show.add_argument('--as', dest='actor')
+    inv_give = inv_sub.add_parser('give', add_help=False)
+    inv_give.add_argument('item')
+    inv_give.add_argument('--to', required=True)
+    inv_give.add_argument('--qty', type=int, default=1)
+    inv_give.add_argument('--from', dest='from_char')
+    inv_give.add_argument('--as', dest='actor')
+    inv_transfer = inv_sub.add_parser('transfer', add_help=False)
+    inv_transfer.add_argument('item')
+    inv_transfer.add_argument('source')
+    inv_transfer.add_argument('dest')
+    inv_transfer.add_argument('--qty', type=int, default=1)
+    inv_transfer.add_argument('--as', dest='actor')
+
+    equip_p = sub.add_parser('equip', add_help=False)
+    equip_p.add_argument('id')
+    equip_p.add_argument('item')
+    equip_p.add_argument('--slot')
+    equip_p.add_argument('--as', dest='actor')
+
+    unequip_p = sub.add_parser('unequip', add_help=False)
+    unequip_p.add_argument('id')
+    unequip_p.add_argument('item')
+    unequip_p.add_argument('--as', dest='actor')
+
+    use_p = sub.add_parser('use', add_help=False)
+    use_p.add_argument('id')
+    use_p.add_argument('item')
+    use_p.add_argument('--target')
+    use_p.add_argument('--as', dest='actor')
     return parser
+
+
+def _with_campaign(explicit):
+    directory = store.open_campaign(explicit)
+    events = store.read_events(directory)
+    state, _prev = store.fold(events)
+    return directory, state
+
+
+def _commit(directory, event, state):
+    relay = party.relay_for(state, event.get('actor'))
+    if relay and 'relayed_by' not in event:
+        event['relayed_by'] = relay
+    saved, new_state = store.append_event(directory, event)
+    return saved, new_state
+
+
+def _read_json(path_text):
+    path = Path(path_text)
+    if not path.is_file():
+        raise EngineError('BAD_ARGS', 'json file does not exist', {'path': str(path)})
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        raise EngineError('BAD_ARGS', 'json file is not JSON') from exc
+    return data
+
+
+def cmd_char_create(args, explicit):
+    _require_dm(args.actor)
+    data = _read_json(args.json_in)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = party.create_character(state, data)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('char create', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_char_assign(args, explicit):
+    actor = _require_actor(args.actor)
+    scores = _read_json(args.json_in)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        result, event = party.assign_scores(state, args.id, scores, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('char assign-scores', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_char_show(args, explicit):
+    actor = _require_actor(args.actor)
+    _directory, state = _with_campaign(explicit)
+    return _ok('char show', party.show_character(state, args.id, actor), turn=store.turn_view(state))
+
+
+def cmd_char_list(args, explicit):
+    _require_actor(args.actor)
+    _directory, state = _with_campaign(explicit)
+    return _ok('char list', party.list_characters(state), turn=store.turn_view(state))
+
+
+def cmd_state_show(args, explicit):
+    actor = _require_actor(args.actor)
+    _directory, state = _with_campaign(explicit)
+    return _ok('state show', party.state_view(state, actor, args.section), turn=store.turn_view(state))
+
+
+def cmd_check(args, explicit, saving):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        outcome, event, warnings = party.roll_check(
+            state, args.id, args.which, args.dc, actor,
+            getattr(args, 'adv', False), getattr(args, 'dis', False),
+            getattr(args, 'help_from', None), getattr(args, 'secret_dc', False),
+            saving=saving,
+        )
+        saved, new_state = _commit(directory, event, state)
+    return _ok(
+        'save' if saving else 'check',
+        outcome,
+        event_ids=[saved['id']],
+        rolls=saved['rolls'],
+        turn=store.turn_view(new_state),
+        warnings=warnings,
+    )
+
+
+def cmd_contest(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        outcome, event = party.roll_contest(state, args.left, args.left_skill, args.right, args.right_skill)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('contest', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_group_check(args, explicit):
+    _require_dm(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        outcome, event = party.roll_group_check(state, args.skill, args.dc)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('group-check', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
+
+
+def cmd_inv_show(args, explicit):
+    actor = _require_actor(args.actor)
+    _directory, state = _with_campaign(explicit)
+    return _ok('inv show', party.show_inventory(state, args.id, actor), turn=store.turn_view(state))
+
+
+def cmd_inv_give(args, explicit):
+    _require_dm(args.actor)
+    if args.qty < 1:
+        raise EngineError('BAD_ARGS', '--qty must be at least 1')
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        _result, event = party.give_item(state, args.item, args.qty, args.to, args.from_char)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('inv give', {'item': args.item, 'qty': args.qty, 'to': args.to}, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_inv_transfer(args, explicit):
+    actor = _require_actor(args.actor)
+    if args.qty < 1:
+        raise EngineError('BAD_ARGS', '--qty must be at least 1')
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        _result, event = party.transfer_item(state, args.item, args.source, args.dest, args.qty, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('inv transfer', {'item': args.item, 'qty': args.qty}, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_equip(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        _result, event = party.equip_item(state, args.id, args.item, args.slot, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('equip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_unequip(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        _result, event = party.unequip_item(state, args.id, args.item, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('unequip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
+
+
+def cmd_use(args, explicit):
+    actor = _require_actor(args.actor)
+    directory, state = _with_campaign(explicit)
+    with store.locked(directory):
+        state, _prev = store.fold(store.read_events(directory))
+        outcome, event = party.use_item(state, args.id, args.item, args.target, actor)
+        saved, new_state = _commit(directory, event, state)
+    return _ok('use', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def _remove_tree(directory):

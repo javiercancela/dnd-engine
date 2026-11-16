@@ -1,0 +1,15 @@
+{
+  "id": "pc-sel",
+  "name": "Sel",
+  "player": "bot:sel",
+  "race": "human",
+  "class": "cleric",
+  "subclass": "life",
+  "background": "acolyte",
+  "abilities": {"method": "standard-array", "str": 13, "dex": 12, "con": 14, "int": 10, "wis": 15, "cha": 8},
+  "skills": ["history", "medicine"],
+  "languages": ["dwarvish", "elvish", "draconic"],
+  "spells_known": ["guidance", "sacred-flame", "spare-the-dying"],
+  "spells_prepared": ["guiding-bolt", "healing-word", "shield-of-faith", "inflict-wounds"],
+  "equipment_choice": "default"
+}

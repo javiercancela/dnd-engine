@@ -1,0 +1,13 @@
+{
+  "id": "pc-pip",
+  "name": "Pip",
+  "player": "bot:pip",
+  "race": "lightfoot-halfling",
+  "class": "rogue",
+  "background": "acolyte",
+  "abilities": {"method": "standard-array", "str": 8, "dex": 15, "con": 14, "int": 10, "wis": 12, "cha": 13},
+  "skills": ["acrobatics", "stealth", "sleight-of-hand", "perception"],
+  "expertise": ["acrobatics", "stealth"],
+  "languages": ["goblin", "orc"],
+  "equipment_choice": "default"
+}
