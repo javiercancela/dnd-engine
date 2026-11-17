@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -196,7 +197,20 @@ def fold(events):
 def write_state(directory, state):
     path = Path(directory) / 'state.json'
     text = json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + '\n'
-    path.write_text(text, encoding='utf-8')
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=path.parent,
+            prefix='.state-', suffix='.json', delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def read_state(directory):
@@ -209,36 +223,83 @@ def read_state(directory):
         return None
 
 
-def append_event(directory, event):
-    """Fold the existing log, append ``event`` (without id/hash/ts), write state.
+class CampaignTransaction:
+    """One verified log snapshot, held under the campaign lock.
 
-    Returns ``(event, state)``. A bad chain raises LOG_TAMPERED and writes nothing.
+    ``state`` returns a working copy so a rule handler may mutate it while
+    validating without changing the snapshot used to commit the command.
+    Call ``append_events`` only after every event in the command is ready.
     """
-    events = read_events(directory)
-    _state, prev = fold(events)
-    next_id = (events[-1]['id'] + 1) if events else 1
-    event['id'] = next_id
-    event['prev_hash'] = prev
-    event['hash'] = event_hash(event)
-    event['ts'] = timestamp()
-    new_state, _prev = fold(events + [event])
-    path = Path(directory) / 'events.jsonl'
-    with path.open('a', encoding='utf-8') as handle:
-        handle.write(canonical(event) + '\n')
-    write_state(directory, new_state)
-    return event, new_state
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.events = read_events(self.directory)
+        self._state, self.head_hash = fold(self.events)
+
+    @property
+    def state(self):
+        return copy.deepcopy(self._state)
+
+    def append_events(self, events):
+        """Validate and serialize the whole batch before appending any of it."""
+        saved = []
+        previous = self.head_hash
+        next_id = (self.events[-1]['id'] + 1) if self.events else 1
+        for pending in events:
+            event = copy.deepcopy(pending)
+            event['id'] = next_id
+            event['prev_hash'] = previous
+            event['hash'] = event_hash(event)
+            event['ts'] = timestamp()
+            saved.append(event)
+            next_id += 1
+            previous = event['hash']
+        if not saved:
+            return [], self.state
+        if any(event.get('type') == 'revert' for event in saved):
+            # A revert changes how older events fold. Ordinary commands can
+            # apply just their new changes to the already verified snapshot.
+            new_state, _head = fold(self.events + saved)
+        else:
+            new_state = self.state
+            for event in saved:
+                apply_changes(new_state, event.get('changes'))
+        payload = ''.join(canonical(event) + '\n' for event in saved)
+        with (self.directory / 'events.jsonl').open('a', encoding='utf-8') as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        write_state(self.directory, new_state)
+        self.events.extend(saved)
+        self._state = new_state
+        self.head_hash = previous
+        return saved, self.state
+
+    def verify(self):
+        """Refresh the cache from this verified snapshot when needed."""
+        if read_state(self.directory) != self._state:
+            write_state(self.directory, self._state)
+        return {'ok': True, 'events': len(self.events), 'head_hash': self.head_hash}
+
+
+@contextmanager
+def transaction(directory):
+    """Lock before reading the log, and keep the lock through the commit."""
+    with locked(directory):
+        yield CampaignTransaction(directory)
+
+
+def append_event(directory, event):
+    """Append one event under a verified campaign transaction."""
+    with transaction(directory) as campaign:
+        saved, state = campaign.append_events([event])
+        return saved[0], state
 
 
 def verify(directory):
-    """Re-hash the log, replay it, and rebuild state.json when the cache differs."""
-    with locked(directory):
-        events = read_events(directory)
-        state, _prev = fold(events)
-        current = read_state(directory)
-        if current != state:
-            write_state(directory, state)
-        head = events[-1]['hash'] if events else ''
-        return {'ok': True, 'events': len(events), 'head_hash': head}
+    """Re-hash and replay the log, rebuilding a missing or stale state cache."""
+    with transaction(directory) as campaign:
+        return campaign.verify()
 
 
 def turn_view(state):

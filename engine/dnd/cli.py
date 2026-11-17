@@ -6,6 +6,7 @@ import json
 import random
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from dnd import adventure
@@ -504,7 +505,7 @@ def cmd_campaign_new(args, explicit):
     except FileExistsError as exc:
         raise EngineError('BAD_ARGS', f'campaign {name} already exists', {'campaign': name}) from exc
     try:
-        with store.locked(directory):
+        with store.transaction(directory) as campaign:
             (directory / 'adventure.json').write_bytes(adventure['raw'])
             meta = {
                 'adventure_sha256': adventure['sha256'],
@@ -525,7 +526,8 @@ def cmd_campaign_new(args, explicit):
                 'rolls': [],
                 'type': 'campaign',
             }
-            event, state = store.append_event(directory, event)
+            saved, state = campaign.append_events([event])
+            event = saved[0]
     except Exception:
         # A failed create should not leave a half-written campaign behind
         # when the failure happened before the log was valid. Leave the
@@ -549,10 +551,10 @@ def cmd_campaign_load(args, explicit):
     directory = store.campaign_dir(root, name)
     if not (directory / 'campaign.json').is_file():
         raise EngineError('UNKNOWN_ID', f'campaign {name} does not exist', {'campaign': name})
-    store.set_active(root, name, directory)
     meta = store.read_meta(directory)
-    with store.locked(directory):
-        state = store.read_state(directory) or {}
+    with store.transaction(directory) as campaign:
+        state = campaign.state
+    store.set_active(root, name, directory)
     return _ok(
         'campaign load',
         {
@@ -568,8 +570,8 @@ def cmd_campaign_load(args, explicit):
 def cmd_campaign_info(_args, explicit):
     directory = store.open_campaign(explicit)
     meta = store.read_meta(directory)
-    with store.locked(directory):
-        state = store.read_state(directory) or {}
+    with store.transaction(directory) as campaign:
+        state = campaign.state
     return _ok(
         'campaign info',
         {
@@ -585,9 +587,9 @@ def cmd_campaign_info(_args, explicit):
 
 def cmd_verify(explicit):
     directory = store.open_campaign(explicit)
-    result = store.verify(directory)
-    with store.locked(directory):
-        state = store.read_state(directory) or {}
+    with store.transaction(directory) as campaign:
+        result = campaign.verify()
+        state = campaign.state
     return _ok('verify', result, turn=store.turn_view(state))
 
 
@@ -602,9 +604,8 @@ def cmd_roll(args, explicit):
         )
     mode, sources, warnings = _advantage(args.adv, args.dis)
     directory = store.open_campaign(explicit)
-    with store.locked(directory):
-        events = store.read_events(directory)
-        state, _prev = store.fold(events)
+    with store.transaction(directory) as campaign:
+        state = campaign.state
         try:
             seed = state['rng']['seed']
             counter = state['rng']['counter']
@@ -652,7 +653,8 @@ def cmd_roll(args, explicit):
             event['reason'] = args.reason
         if args.secret:
             event['secret'] = True
-        event, state = store.append_event(directory, event)
+        saved, state = campaign.append_events([event])
+        event = saved[0]
     envelope_roll = dict(record)
     envelope_roll['id'] = f'r-{counter:04d}'
     return _ok(
@@ -672,10 +674,8 @@ def cmd_log(args, explicit):
     if args.since is not None and args.since < 0:
         raise EngineError('BAD_ARGS', '--since must be zero or more', cmd='log')
     directory = store.open_campaign(explicit)
-    with store.locked(directory):
-        events = store.read_events(directory)
-        store.fold(events)
-        state = store.read_state(directory) or {}
+    with store.transaction(directory) as campaign:
+        events, state = campaign.events, campaign.state
     rows = events
     if args.since is not None:
         rows = [event for event in rows if event.get('id', 0) > args.since]
@@ -1211,19 +1211,22 @@ def _parser():
     return parser
 
 
-def _with_campaign(explicit):
+@contextmanager
+def _campaign(explicit):
     directory = store.open_campaign(explicit)
-    events = store.read_events(directory)
-    state, _prev = store.fold(events)
-    return directory, state
+    with store.transaction(directory) as campaign:
+        yield campaign
 
 
-def _commit(directory, event, state):
-    relay = party.relay_for(state, event.get('actor'))
-    if relay and 'relayed_by' not in event:
-        event['relayed_by'] = relay
-    saved, new_state = store.append_event(directory, event)
-    return saved, new_state
+def _with_campaign(explicit):
+    """Read a verified snapshot under the campaign lock."""
+    with _campaign(explicit) as campaign:
+        return campaign.directory, campaign.state
+
+
+def _commit(campaign, event, state):
+    saved, new_state = _commit_many(campaign, [event], state)
+    return saved[0], new_state
 
 
 def _read_json(path_text):
@@ -1240,22 +1243,20 @@ def _read_json(path_text):
 def cmd_char_create(args, explicit):
     _require_dm(args.actor)
     data = _read_json(args.json_in)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = party.create_character(state, data)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('char create', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_char_assign(args, explicit):
     actor = _require_actor(args.actor)
     scores = _read_json(args.json_in)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = party.assign_scores(state, args.id, scores, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('char assign-scores', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
@@ -1279,16 +1280,15 @@ def cmd_state_show(args, explicit):
 
 def cmd_check(args, explicit, saving):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         outcome, event, warnings = party.roll_check(
             state, args.id, args.which, args.dc, actor,
             getattr(args, 'adv', False), getattr(args, 'dis', False),
             getattr(args, 'help_from', None), getattr(args, 'secret_dc', False),
             saving=saving,
         )
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok(
         'save' if saving else 'check',
         outcome,
@@ -1301,21 +1301,19 @@ def cmd_check(args, explicit, saving):
 
 def cmd_contest(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         outcome, event = party.roll_contest(state, args.left, args.left_skill, args.right, args.right_skill)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('contest', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_group_check(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         outcome, event = party.roll_group_check(state, args.skill, args.dc)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('group-check', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1329,12 +1327,11 @@ def cmd_inv_give(args, explicit):
     _require_dm(args.actor)
     if args.qty < 1:
         raise EngineError('BAD_ARGS', '--qty must be at least 1')
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         adventure = _read_adventure_doc(directory) if args.from_char and str(args.from_char).startswith('loot:') else None
         _result, event = party.give_item(state, args.item, args.qty, args.to, args.from_char, adventure)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('inv give', {'item': args.item, 'qty': args.qty, 'to': args.to}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
@@ -1342,44 +1339,40 @@ def cmd_inv_transfer(args, explicit):
     actor = _require_actor(args.actor)
     if args.qty < 1:
         raise EngineError('BAD_ARGS', '--qty must be at least 1')
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         _result, event = party.transfer_item(state, args.item, args.source, args.dest, args.qty, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('inv transfer', {'item': args.item, 'qty': args.qty}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_equip(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         _result, event = party.equip_item(state, args.id, args.item, args.slot, actor)
         _attach_action(state, event, actor, args.id)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('equip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_unequip(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         _result, event = party.unequip_item(state, args.id, args.item, actor)
         _attach_action(state, event, actor, args.id)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('unequip', {'id': args.id, 'item': args.item}, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_use(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         outcome, event = party.use_item(state, args.id, args.item, args.target, actor)
         _attach_action(state, event, actor, args.id)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('use', outcome, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1400,31 +1393,29 @@ def _ids(text):
 
 def cmd_spawn(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         adventure = _read_adventure_doc(directory)
         result, event = combat.spawn_encounter(state, adventure, args.id, args.roll_hp)
-        saved, new_state = _commit(directory, event, state)
-        ids = [saved['id']]
-        rolls = list(saved['rolls'])
+        events = [event]
         if args.start_combat:
-            ids_to_fight = list((new_state.get('characters') or {}).keys()) + result['spawned']
-            started, start_event = combat.start_combat(new_state, ids_to_fight, [])
-            saved, new_state = _commit(directory, start_event, new_state)
-            ids.append(saved['id'])
-            rolls.extend(saved['rolls'])
+            staged = store.apply_changes(campaign.state, event['changes'])
+            ids_to_fight = list((staged.get('characters') or {}).keys()) + result['spawned']
+            started, start_event = combat.start_combat(staged, ids_to_fight, [])
+            events.append(start_event)
             result = {'spawned': result['spawned'], 'combat': started}
+        saved, new_state = _commit_many(campaign, events, state)
+        ids = [event['id'] for event in saved]
+        rolls = [roll for event in saved for roll in event['rolls']]
     return _ok('encounter spawn', result, event_ids=ids, rolls=rolls, turn=store.turn_view(new_state))
 
 
 def cmd_combat_start(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.start_combat(state, _ids(args.combatants), _ids(args.surprised))
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('combat start', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1436,21 +1427,19 @@ def cmd_combat_status(args, explicit):
 
 def cmd_combat_end(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.end_combat(state, args.reason)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('combat end', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_turn_end(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.end_turn(state, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('turn end', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1458,14 +1447,13 @@ def cmd_attack(args, explicit):
     actor = _require_actor(args.actor)
     if args.cover and args.cover not in ('half', 'three-quarters'):
         raise EngineError('BAD_ARGS', 'cover must be half or three-quarters')
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event, warnings = combat.attack(
             state, args.attacker, args.target, args.weapon, args.natural, args.reach,
             actor, args.adv, args.dis, args.reaction, args.offhand, args.cover,
         )
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     if actor != 'dm':
         result = dict(result)
         result.pop('target_hp', None)
@@ -1474,89 +1462,81 @@ def cmd_attack(args, explicit):
 
 def cmd_damage(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.deal_damage(state, args.id, args.expr, args.damage_type, args.source)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('damage', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_heal(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.heal_target(state, args.id, args.expr)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('heal', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_temp_hp(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.set_temp_hp(state, args.id, args.amount)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('temp-hp', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_death_save(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.death_save(state, args.id, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('death-save', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_condition(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.change_condition(
             state, args.id, args.name, args.verb == 'remove',
             combat.parse_duration(args.duration), args.level,
         )
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok(f'condition {args.verb}', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_action(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.take_action(
             state, args.id, args.verb, args.target, actor, args.bonus, args.trigger,
         )
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('action', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_move(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = combat.move_creature(state, args.id, args.ft, args.difficult, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('move', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_cast(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = spells.cast_spell(
             state, args.id, args.spell, _ids(args.targets), args.slot, args.reach,
             actor, args.ritual, args.reaction,
         )
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('cast', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
@@ -1574,41 +1554,37 @@ def _parse_spend(text):
 
 def cmd_rest_short(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = spells.short_rest(state, _parse_spend(args.spend))
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('rest short', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_rest_long(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = spells.long_rest(state)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('rest long', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_spend_hd(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = spells.spend_hit_dice(state, args.id, args.count, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('rest spend-hd', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
-def _commit_many(directory, events, state):
-    saved = []
-    current = state
+def _commit_many(campaign, events, state):
     for event in events:
-        stored, current = _commit(directory, event, current)
-        saved.append(stored)
-    return saved, current
+        relay = party.relay_for(state, event.get('actor'))
+        if relay and 'relayed_by' not in event:
+            event['relayed_by'] = relay
+    return campaign.append_events(events)
 
 
 def cmd_adventure_validate(args):
@@ -1631,31 +1607,28 @@ def cmd_look(args, explicit):
 
 def cmd_go(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         doc = _read_adventure_doc(directory)
         result, events = adventure.go(state, doc, args.dest, args.travel_hours, actor)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     return _ok('go', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
 
 
 def cmd_search(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         doc = _read_adventure_doc(directory)
         result, events = adventure.search_location(state, doc, args.id, actor)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     return _ok('search', result, event_ids=[item['id'] for item in saved], rolls=saved[-1]['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_trap(args, explicit):
     actor = _require_actor(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         doc = _read_adventure_doc(directory)
         if args.verb == 'trigger':
             _require_dm(actor)
@@ -1664,7 +1637,7 @@ def cmd_trap(args, explicit):
             result, events = adventure.trap_spot(state, doc, args.trap, args.id, actor)
         else:
             result, events = adventure.trap_disarm(state, doc, args.trap, args.id, actor)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     if actor != 'dm' and isinstance(result, dict):
         result = dict(result)
         result.pop('dc', None)
@@ -1673,75 +1646,68 @@ def cmd_trap(args, explicit):
 
 def cmd_time(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, events = adventure.advance_time(state, args.minutes)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     return _ok('time advance', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
 
 
 def cmd_xp_award(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         targets = _ids(args.to)
         result, events = adventure.award_xp(state, args.amount, targets)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     return _ok('xp award', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
 
 
 def cmd_xp_milestone(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        directory, state = campaign.directory, campaign.state
         doc = _read_adventure_doc(directory)
         result, events = adventure.milestone(state, args.level, doc)
-        saved, new_state = _commit_many(directory, events, state)
+        saved, new_state = _commit_many(campaign, events, state)
     return _ok('xp milestone', result, event_ids=[item['id'] for item in saved], turn=store.turn_view(new_state))
 
 
 def cmd_level_up(args, explicit):
     actor = _require_actor(args.actor)
     choices = _read_json(args.json_in) if args.json_in else {}
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = levelup.level_up(state, args.id, choices, args.roll, actor)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('level up', result, event_ids=[saved['id']], rolls=saved['rolls'], turn=store.turn_view(new_state))
 
 
 def cmd_player_add(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = history.add_seat(state, args.player_id, args.controller)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('player add', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_undo(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        events = store.read_events(directory)
-        state, _prev = store.fold(events)
+    with _campaign(explicit) as campaign:
+        state = campaign.state
+        events = campaign.events
         result, event = history.undo(events, args.reason)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('undo', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
 def cmd_override(args, explicit):
     _require_dm(args.actor)
-    directory, state = _with_campaign(explicit)
-    with store.locked(directory):
-        state, _prev = store.fold(store.read_events(directory))
+    with _campaign(explicit) as campaign:
+        state = campaign.state
         result, event = history.override(state, args.path, args.value, args.reason)
-        saved, new_state = _commit(directory, event, state)
+        saved, new_state = _commit(campaign, event, state)
     return _ok('override', result, event_ids=[saved['id']], turn=store.turn_view(new_state))
 
 
