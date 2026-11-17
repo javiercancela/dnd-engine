@@ -288,6 +288,8 @@ def trap_trigger(state, adventure, trap_id, target_id):
         target = combat._require_creature(new_state, target_id)
         amount = combat._mitigate(target, effect.get('type') or 'bludgeoning', amount)
         combat._apply_damage_parts(new_state, target, [{'type': effect.get('type') or 'bludgeoning', 'amount': amount}], False)
+        concentration_rolls, _concentration = combat.check_concentration(new_state, target, amount)
+        rolls.extend(concentration_rolls)
     triggered = list(new_state.setdefault('adventure', {}).get('triggered') or [])
     if trap_id not in triggered:
         triggered.append(trap_id)
