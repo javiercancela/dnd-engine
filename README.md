@@ -128,7 +128,7 @@ These are recorded in `docs/decisions.md`. The short list:
 - Spells without a full mechanical model return `effect: manual` after the slot is spent. Acid arrow is manual. Shocking grasp does not check metal armor.
 - Components are assumed. Rituals are out of combat and spend no slot. A wizard may ritual-cast from the spellbook.
 - The bonus-action spell rule lasts until that turn ends.
-- Sleep does not reduce hit points. Concentration breaks on a failed Constitution save after damage.
+- Sleep does not reduce hit points. Concentration ends on incapacitation (including sleep, 0 HP, or death), replacement by another concentration spell, or a failed Constitution save after damage.
 - Rests cannot start during combat. A short rest spends Arcane Recovery if a use remains. The use comes back on a long rest.
 - Level-up stops at 5. Average hit points unless `--roll`. Invocations, metamagic, and pact boons are recorded as features, not fully resolved. A hunter's prey choice is stored. A land druid's bonus cantrip is the feature, not an extra cantrip picked at the table.
 - `time advance` clears round-duration conditions. It does not expire every hour-long spell by the clock.

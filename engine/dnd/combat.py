@@ -492,7 +492,8 @@ def change_condition(state, target_id, name, remove, duration, level):
         else:
             target['conditions'] = [row for row in rows if row['index'] != name]
             target['conditions'].append({'index': name, 'duration': duration})
-    changes = [_creature_change(state, new_state, target_id)]
+    check_concentration(new_state, target, 0)
+    changes = [_creature_change(state, new_state, creature_id) for creature_id in _touched(state, new_state)]
     verb = 'remove' if remove else 'add'
     event = _event('condition', 'dm', f'condition {verb} {target_id} {name} --as dm', [], changes)
     event['outcome'] = {'condition': name, 'removed': remove, 'exhaustion': target.get('exhaustion') or 0}
@@ -1092,11 +1093,17 @@ def _wearing_armor(creature):
 
 
 def check_concentration(state, creature, amount):
-    """Roll the concentration save after damage. Mutates state."""
+    """End concentration on incapacitation, or save after damage. Mutates state."""
     casting = creature.get('spellcasting') or {}
-    if not casting.get('concentration') or amount <= 0:
-        if creature.get('dead') and casting.get('concentration'):
-            return [], {'broken': True, 'reason': 'dead', 'cleared': _clear_concentration(state, creature)}
+    if not casting.get('concentration'):
+        return [], None
+    if _incapacitated(creature):
+        return [], {
+            'broken': True,
+            'reason': 'dead' if creature.get('dead') else 'incapacitated',
+            'cleared': _clear_concentration(state, creature),
+        }
+    if amount <= 0:
         return [], None
     dc = max(10, amount // 2)
     counter = state['rng']['counter']
@@ -1135,6 +1142,7 @@ def _clear_concentration(state, creature):
     conc = casting.get('concentration')
     if not conc:
         return []
+    casting['concentration'] = None
     touched = []
     creature_id = creature.get('id')
     if creature_id:
@@ -1144,11 +1152,20 @@ def _clear_concentration(state, creature):
         if other is None:
             continue
         if conc.get('spell') == 'bless':
-            other['blessed'] = False
+            other['blessed'] = _concentration_affects(state, 'bless', target_id)
         if target_id not in touched:
             touched.append(target_id)
-    casting['concentration'] = None
     return touched
+
+
+def _concentration_affects(state, spell, target_id):
+    """Another caster's overlapping effect survives this concentration ending."""
+    for bucket in ('characters', 'monsters'):
+        for source in (state.get(bucket) or {}).values():
+            concentration = (source.get('spellcasting') or {}).get('concentration') or {}
+            if concentration.get('spell') == spell and target_id in (concentration.get('targets') or []):
+                return True
+    return False
 
 
 def _wake_sleep(creature):

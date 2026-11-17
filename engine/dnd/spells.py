@@ -62,6 +62,7 @@ def cast_spell(state, caster_id, spell_index, targets, slot, declared_range, act
         spell = srd.get('spell', spell_index)
     except KeyError:
         raise EngineError('UNKNOWN_ID', f'unknown spell {spell_index}', {'spell': spell_index}) from None
+    spell_index = spell['index']
     if not _available(caster, spell, ritual):
         rule('spell is not prepared or known', spell=spell_index)
     if ritual and not spell.get('ritual'):
@@ -84,6 +85,8 @@ def cast_spell(state, caster_id, spell_index, targets, slot, declared_range, act
     slot_used = _reserve_slot(caster, spell, slot, ritual)
     new_state = combat._copy(state)
     caster = combat._require_creature(new_state, caster_id)
+    if spell.get('concentration'):
+        combat._clear_concentration(new_state, caster)
     rolls = []
     kind = model_of(spell)
     if kind == 'heal':
@@ -116,7 +119,7 @@ def cast_spell(state, caster_id, spell_index, targets, slot, declared_range, act
     if not (new_state.get('combat') or {}).get('active'):
         _advance_time(new_state, _minutes(spell, ritual))
     result.update({'spell': spell_index, 'slot': slot_used})
-    changes = _diff(state, new_state, [caster_id, *targets])
+    changes = _diff(state, new_state)
     event = {
         'actor': actor,
         'changes': changes,
@@ -142,7 +145,7 @@ def short_rest(state, spend):
             _refill_slots(character)
         recovered.extend(_arcane_recovery(character))
     _advance_time(new_state, 60)
-    changes = _diff(state, new_state, list((new_state.get('characters') or {}).keys()))
+    changes = _diff(state, new_state)
     event = {
         'actor': 'dm', 'changes': changes, 'cmd': 'rest short --as dm', 'rolls': [],
         'type': 'rest', 'outcome': {'kind': 'short', 'healed': healed, 'recovered': recovered},
@@ -161,6 +164,7 @@ def long_rest(state):
     for character in (new_state.get('characters') or {}).values():
         if character.get('dead'):
             continue
+        combat._clear_concentration(new_state, character)
         character['hp']['current'] = character['hp']['max']
         character['stable'] = False
         character['death_saves'] = {'s': 0, 'f': 0}
@@ -179,7 +183,7 @@ def long_rest(state):
         _recharge(character, 'long')
         _regain_hit_dice(character)
     _advance_time(new_state, 8 * 60)
-    changes = _diff(state, new_state, list((new_state.get('characters') or {}).keys()))
+    changes = _diff(state, new_state)
     event = {
         'actor': 'dm', 'changes': changes, 'cmd': 'rest long --as dm', 'rolls': [],
         'type': 'rest', 'outcome': {'kind': 'long'},
@@ -194,7 +198,7 @@ def spend_hit_dice(state, char_id, count, actor):
     combat._assert_controls(state, actor, char_id)
     new_state = copy.deepcopy(state)
     healed = _spend_hit_dice(new_state, char_id, count)
-    changes = _diff(state, new_state, [char_id])
+    changes = _diff(state, new_state)
     event = {
         'actor': actor, 'changes': changes, 'cmd': f'rest spend-hd {char_id} {count} --as {actor}',
         'rolls': healed.get('rolls') or [], 'type': 'rest',
@@ -290,11 +294,10 @@ def _spend_slot(character, slot):
 
 
 def _set_concentration(state, caster, spell_index, targets):
+    """Record the new spell after earlier concentration and effects were cleared."""
     casting = caster.get('spellcasting')
     if not casting:
         return
-    if casting.get('concentration'):
-        combat._clear_concentration(state, caster)
     casting['concentration'] = {'spell': spell_index, 'targets': list(targets)}
 
 
@@ -416,6 +419,7 @@ def _resolve_sleep(state, caster, spell, targets, slot, rolls):
             rows = [row for row in target.get('conditions') or [] if not (isinstance(row, dict) and row.get('index') == 'unconscious')]
             rows.append({'index': 'unconscious', 'source': 'sleep', 'duration': {'type': 'rounds', 'rounds': 10}})
             target['conditions'] = rows
+            combat.check_concentration(state, target, 0)
             affected.append(target.get('id'))
     return {'effect': 'sleep', 'pool': amount, 'affected': affected, 'remaining': pool}
 
@@ -664,7 +668,7 @@ def _names(creature):
     return condition_names(creature)
 
 
-def _diff(before, after, ids):
+def _diff(before, after):
     changes = []
     if before.get('combat') != after.get('combat'):
         changes.append({'op': 'set', 'path': 'combat', 'from': before.get('combat'), 'to': after.get('combat')})
@@ -672,23 +676,6 @@ def _diff(before, after, ids):
         changes.append({'op': 'set', 'path': 'time', 'from': before.get('time'), 'to': after.get('time')})
     if before.get('rng') != after.get('rng'):
         changes.append({'op': 'set', 'path': 'rng.counter', 'from': before['rng']['counter'], 'to': after['rng']['counter']})
-    seen = set()
-    for creature_id in ids:
-        if creature_id in seen:
-            continue
-        seen.add(creature_id)
-        if (before.get('characters') or {}).get(creature_id) != (after.get('characters') or {}).get(creature_id):
-            if creature_id in (after.get('characters') or {}):
-                changes.append({
-                    'op': 'set', 'path': f'characters.{creature_id}',
-                    'from': (before.get('characters') or {}).get(creature_id),
-                    'to': after['characters'][creature_id],
-                })
-        elif (before.get('monsters') or {}).get(creature_id) != (after.get('monsters') or {}).get(creature_id):
-            if creature_id in (after.get('monsters') or {}):
-                changes.append({
-                    'op': 'set', 'path': f'monsters.{creature_id}',
-                    'from': (before.get('monsters') or {}).get(creature_id),
-                    'to': after['monsters'][creature_id],
-                })
+    for creature_id in combat._touched(before, after):
+        changes.append(combat._creature_change(before, after, creature_id))
     return changes
