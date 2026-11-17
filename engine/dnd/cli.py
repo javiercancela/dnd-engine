@@ -391,7 +391,7 @@ def dispatch(argv):
     if group == 'campaign' and verb == 'info':
         return cmd_campaign_info(args, explicit)
     if group == 'verify':
-        return cmd_verify(explicit)
+        return cmd_verify(args, explicit)
     if group == 'roll':
         return cmd_roll(args, explicit)
     if group == 'log':
@@ -585,11 +585,13 @@ def cmd_campaign_info(_args, explicit):
     )
 
 
-def cmd_verify(explicit):
+def cmd_verify(args, explicit):
     directory = store.open_campaign(explicit)
     with store.transaction(directory) as campaign:
         result = campaign.verify()
         state = campaign.state
+    if getattr(args, 'actor', None) != 'dm':
+        result = {'ok': result['ok'], 'events': result['events']}
     return _ok('verify', result, turn=store.turn_view(state))
 
 
@@ -757,59 +759,180 @@ def _advantage(adv, dis):
 
 
 _HIDDEN_KEYS = {'dm_notes', 'dm_only', 'target_hp', 'secret_dc'}
+_PUBLIC_EVENT_KEYS = ('id', 'ts', 'type', 'actor', 'relayed_by', 'reverts', 'secret')
+_PUBLIC_OUTCOMES = {
+    'check': {'total', 'dc', 'success', 'natural', 'auto'},
+    'save': {'total', 'dc', 'success', 'natural', 'auto'},
+    'contest': {'a', 'b', 'winner'},
+    'group-check': {'dc', 'successes', 'party', 'success', 'rolls'},
+    'encounter-spawn': {'spawned'},
+    'combat-start': {'order', 'current'},
+    'turn-end': {'next', 'round'},
+    'combat-end': {'reason', 'rounds', 'xp', 'winner'},
+    'attack': {'hit', 'crit', 'attack_roll', 'ac', 'damage', 'target_status', 'concentration'},
+    'damage': {'amount', 'type', 'target_status', 'concentration'},
+    'heal': {'amount', 'target_status'},
+    'temp-hp': set(),
+    'death-save': {'successes', 'failures', 'state', 'natural'},
+    'condition': {'condition', 'removed', 'exhaustion'},
+    'action': {'action', 'bonus', 'amount'},
+    'move': {'spent', 'remaining'},
+    'cast': {'effect', 'spell', 'slot', 'targets', 'healing', 'pool', 'affected', 'remaining',
+             'ac_bonus', 'concentration', 'id', 'ac', 'dc'},
+    'use': {'item', 'target', 'effect', 'amount'},
+    'rest': {'kind', 'healed', 'recovered', 'id', 'spent', 'amount'},
+    'adventure': {'location', 'minutes', 'found', 'totals', 'trap', 'success', 'total',
+                  'damage', 'saved', 'day', 'minute', 'awarded', 'available', 'milestone',
+                  'surprised', 'spawned'},
+    'level': {'id', 'level'},
+}
+# Nested outcome objects are projected too: unexpected fields cannot smuggle a
+# sheet, hit-point total, secret DC, or DM prose into a public event.
+_PUBLIC_OUTCOME_FIELDS = set().union(*_PUBLIC_OUTCOMES.values()) | {
+    'type', 'amount', 'id', 'init', 'save', 'hit', 'crit', 'attack_roll', 'ac',
+    'damage', 'saved', 'status', 'dc', 'total', 'success', 'broken', 'natural',
+    'kind', 'reveal', 'to', 'label', 'perception', 'investigation', 'xp',
+}
+_PUBLIC_ROLL_KEYS = {'adv', 'adv_sources', 'counter', 'dice', 'expr', 'kept', 'label', 'mod', 'total'}
 
 
-def _player_view(value, monster=False):
-    """Drop DM-only fields and monster hit points from a player-facing value."""
+def _player_view(value):
+    """Remove explicit DM-only fields from an owner's own sheet snapshot."""
     if isinstance(value, list):
-        return [_player_view(item, monster) for item in value]
+        return [_player_view(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _player_view(item) for key, item in value.items() if key not in _HIDDEN_KEYS}
+    return value
+
+
+def _public_creature(value, creature_id, actor, monster):
     if not isinstance(value, dict):
-        return value
-    ref = value.get('ref')
-    is_monster = monster or (
-        isinstance(ref, str) and (ref.startswith('srd:') or ref.startswith('custom:'))
-    )
-    cleaned = {}
-    for key, item in value.items():
-        if key in _HIDDEN_KEYS:
-            continue
-        if is_monster and key == 'hp':
-            continue
-        if key == 'changes':
-            cleaned[key] = [_player_change(change) for change in item or []]
-            continue
-        cleaned[key] = _player_view(item, is_monster)
-    return cleaned
+        return None
+    if not monster and creature_id == actor:
+        return _player_view(value)
+    if monster:
+        return {'id': value.get('id', creature_id), 'name': value.get('name'),
+                'status': party.status_of(value)}
+    return party.public_view(value)
 
 
-def _player_change(change):
+def _player_change(change, actor):
+    """Expose creature snapshots, never arbitrary state paths or leaf values."""
     path = str(change.get('path') or '')
-    monster = path == 'monsters' or path.startswith('monsters.')
-    shown = dict(change)
-    shown['from'] = _player_view(change.get('from'), monster)
-    shown['to'] = _player_view(change.get('to'), monster)
+    parts = path.split('.')
+    if len(parts) not in (1, 2) or parts[0] not in ('characters', 'monsters'):
+        return None
+    monster = parts[0] == 'monsters'
+    shown = {'op': 'set', 'path': path}
+    for side in ('from', 'to'):
+        value = change.get(side)
+        if len(parts) == 1 and isinstance(value, dict):
+            shown[side] = {creature_id: _public_creature(creature, creature_id, actor, monster)
+                           for creature_id, creature in value.items()}
+        elif len(parts) == 2:
+            shown[side] = _public_creature(value, parts[1], actor, monster)
+        else:
+            shown[side] = None
     return shown
 
 
+def _public_fields(value, fields):
+    if isinstance(value, list):
+        return [_public_fields(item, fields) for item in value]
+    if isinstance(value, dict):
+        return {key: _public_fields(item, fields) for key, item in value.items() if key in fields}
+    return value
+
+
+_PUBLIC_ID_FLAGS = {'--weapon', '--natural', '--targets', '--target', '--to'}
+
+
+def _public_id(token):
+    """Keep creature, item, and spell ids. Drop dice, amounts, and DCs."""
+    if not token or token.startswith('--'):
+        return False
+    if token.isdigit():
+        return False
+    folded = token.lower()
+    if any(character.isdigit() for character in folded) and 'd' in folded:
+        return False
+    body = token.replace('-', '').replace(',', '').replace(':', '')
+    return body.isalnum()
+
+
+def _public_command(event):
+    """Keep the command and public ids. Drop flags that can carry secrets."""
+    words = str(event.get('cmd') or '').split()
+    if not words:
+        return 'event'
+    commands = {entry['name'] for entry in COMMANDS}
+    label_length = 1
+    for count in (2, 1):
+        if ' '.join(words[:count]) in commands:
+            label_length = count
+            break
+    kept = words[:label_length]
+    index = label_length
+    while index < len(words):
+        token = words[index]
+        if token in _PUBLIC_ID_FLAGS and index + 1 < len(words):
+            if _public_id(words[index + 1]):
+                kept.append(words[index + 1])
+            index += 2
+            continue
+        if token.startswith('--'):
+            if token in _VALUE_FLAGS and index + 1 < len(words) and not words[index + 1].startswith('--'):
+                index += 2
+            else:
+                index += 1
+            continue
+        if _public_id(token):
+            kept.append(token)
+        index += 1
+    return ' '.join(kept)
+
+
 def _redact(event, actor):
-    hidden = dict(event)
-    if event.get('secret'):
-        hidden['rolls'] = [
-            {'counter': roll.get('counter'), 'secret': True}
-            for roll in event.get('rolls') or []
-        ]
-    if actor != 'dm':
-        hidden = _player_view(hidden)
-        if event.get('type') == 'adventure' and isinstance(hidden.get('outcome'), dict):
-            outcome = dict(hidden['outcome'])
-            outcome.pop('dc', None)
-            hidden['outcome'] = outcome
-        if event.get('secret_dc') and isinstance(hidden.get('outcome'), dict):
-            outcome = dict(hidden['outcome'])
-            outcome.pop('dc', None)
-            outcome.pop('success', None)
-            hidden['outcome'] = outcome
-    return hidden
+    """Project public history while preserving the DM's full audit event.
+
+    Raw hashes commit unsalted secret values and RNG state exposes future rolls,
+    so neither belongs in a player-facing history. The DM retains both for audit.
+    """
+    if actor == 'dm':
+        return event
+    shown = {key: event[key] for key in _PUBLIC_EVENT_KEYS if key in event}
+    shown['cmd'] = _public_command(event)
+    event_type = event.get('type')
+    hide_rolls = event.get('secret') or event_type in ('encounter-spawn', 'override')
+    if event_type in ('char-create', 'assign-scores', 'level'):
+        hide_rolls = hide_rolls or not any(
+            change.get('path') == f'characters.{actor}' for change in event.get('changes') or []
+        )
+    shown['rolls'] = [
+        {'counter': roll.get('counter'), 'secret': True} if hide_rolls
+        else {key: value for key, value in roll.items() if key in _PUBLIC_ROLL_KEYS}
+        for roll in event.get('rolls') or []
+    ]
+    shown['changes'] = []
+    if not event.get('secret') and event_type != 'override':
+        for change in event.get('changes') or []:
+            public = _player_change(change, actor)
+            if public is not None:
+                shown['changes'].append(public)
+    if event.get('actor') == actor and event.get('reason'):
+        shown['reason'] = event['reason']
+    if not event.get('secret') and isinstance(event.get('outcome'), dict):
+        allowed = _PUBLIC_OUTCOMES.get(event_type, set())
+        nested = _PUBLIC_OUTCOME_FIELDS
+        if event_type == 'adventure' or event.get('secret_dc'):
+            allowed = allowed - {'dc'}
+            nested = nested - {'dc'}
+        if event.get('secret_dc'):
+            allowed = allowed - {'success'}
+            nested = nested - {'success'}
+        shown['outcome'] = {key: _public_fields(value, nested)
+                            for key, value in event['outcome'].items() if key in allowed}
+    return shown
 
 
 def _require_actor(actor):
