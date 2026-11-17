@@ -10,7 +10,7 @@ STANDARD_ARRAY = (15, 14, 13, 12, 10, 8)
 POINT_COST = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
 POINT_BUDGET = 27
 WIZARD_SPELLBOOK_AT_1 = 6
-PREPARED_CLASSES = ('cleric', 'druid', 'wizard')
+PREPARED_CLASSES = ('cleric', 'druid', 'paladin', 'wizard')
 ARMOR_PROFS = ('light-armor', 'medium-armor', 'heavy-armor', 'shields', 'all-armor')
 _WEAPON_PROF = {
     'battleaxe': 'battleaxes',

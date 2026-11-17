@@ -3,13 +3,12 @@
 import copy
 import re
 
-from dnd.chargen import ability_mod, advantage_state, auto_fail_save, rule
+from dnd.chargen import PREPARED_CLASSES, ability_mod, advantage_state, auto_fail_save, rule
 from dnd.dice import roll_expr
 from dnd.errors import EngineError
 from dnd import combat
 from dnd import srd
 
-PREPARED = ('wizard', 'cleric', 'druid', 'paladin', 'ranger')
 CASTERS = ('bard', 'cleric', 'druid', 'paladin', 'ranger', 'sorcerer', 'warlock', 'wizard')
 # The structured damage is only the first tick. The end-of-turn acid is not in the record.
 INCOMPLETE = {'acid-arrow'}
@@ -72,10 +71,9 @@ def cast_spell(state, caster_id, spell_index, targets, slot, declared_range, act
     casting = _casting_time(spell, reaction)
     _check_turn_and_economy(state, actor, caster_id, casting)
     _check_bonus_rule(state, caster_id, spell, casting, ritual)
+    kind = model_of(spell)
     targets = list(targets or [])
-    if not targets and (spell.get('range') == 'Self' or spell_index in ('shield', 'mage-armor', 'false-life')):
-        targets = [caster_id]
-    if spell_index == 'shield':
+    if not targets and ((spell.get('range') == 'Self' and not spell.get('area_of_effect')) or spell_index == 'mage-armor'):
         targets = [caster_id]
     for target_id in targets:
         combat._require_creature(state, target_id)
@@ -83,12 +81,12 @@ def cast_spell(state, caster_id, spell_index, targets, slot, declared_range, act
     if declared_range is not None and declared_range > limit:
         raise EngineError('OUT_OF_RANGE', f'{declared_range} ft is out of range', {'range': declared_range, 'limit': limit})
     slot_used = _reserve_slot(caster, spell, slot, ritual)
+    targets = _validate_targets(spell, caster, targets, slot_used, kind)
     new_state = combat._copy(state)
     caster = combat._require_creature(new_state, caster_id)
     if spell.get('concentration'):
         combat._clear_concentration(new_state, caster)
     rolls = []
-    kind = model_of(spell)
     if kind == 'heal':
         result = _resolve_heal(new_state, caster, spell, targets, slot_used or spell['level'], rolls)
     elif kind == 'temp':
@@ -217,9 +215,52 @@ def _available(character, spell, ritual):
         return True
     if index in (casting.get('domain') or []):
         return True
-    if character.get('class') in PREPARED:
-        return index in (casting.get('prepared') or [])
+    if character.get('class') in PREPARED_CLASSES:
+        on_list = any(entry['index'] == character['class'] for entry in spell.get('classes') or [])
+        return on_list and index in (casting.get('prepared') or [])
     return index in (casting.get('known') or [])
+
+
+def _validate_targets(spell, caster, targets, slot, kind):
+    """Validate modeled target choices; return one entry per attack beam.
+
+    Area placement is declared by the caller, just like range: there is no map.
+    Manual spells retain their targets for DM adjudication.
+    """
+    if kind == 'manual':
+        return targets
+    index = spell['index']
+    if not targets:
+        raise EngineError('BAD_ARGS', 'name a target')
+    if spell.get('range') == 'Self' and not spell.get('area_of_effect'):
+        if targets != [caster['id']]:
+            rule('that spell targets only its caster', spell=index)
+        return targets
+    if index == 'eldritch-blast':
+        beams = 1 + sum(caster.get('level', 1) >= level for level in (5, 11, 17))
+        if len(targets) > beams:
+            rule('too many targets for the spell beams', spell=index, limit=beams)
+        return [targets[beam % len(targets)] for beam in range(beams)]
+    if kind == 'missile':
+        darts = 3 + max(0, (slot or 1) - 1)
+        if len(targets) > darts:
+            rule('too many targets for the spell darts', spell=index, limit=darts)
+        return targets
+    if len(set(targets)) != len(targets):
+        rule('a creature can be targeted only once by that spell', spell=index)
+    if kind == 'bless':
+        limit = 3 + max(0, (slot or 1) - 1)
+    elif index in ('mass-cure-wounds', 'mass-healing-word', 'prayer-of-healing'):
+        limit = 6
+    elif index == 'acid-splash':
+        limit = 2
+    elif kind in ('save', 'sleep') and spell.get('area_of_effect'):
+        limit = None
+    else:
+        limit = 1
+    if limit is not None and len(targets) > limit:
+        rule('too many targets for that spell', spell=index, limit=limit)
+    return targets
 
 
 def _casting_time(spell, reaction):
@@ -363,6 +404,9 @@ def _resolve_save(state, caster, spell, targets, slot, rolls):
 def _resolve_attack(state, caster, spell, targets, slot, rolls):
     if not targets:
         raise EngineError('BAD_ARGS', 'name a target')
+    for target_id in targets:
+        if combat._is_dead(combat._require_creature(state, target_id)):
+            raise EngineError('INVALID_TARGET', f'{target_id} is dead', {'id': target_id})
     expr = _damage_expr(spell, slot, caster.get('level', 1))
     damage_type = _damage_type(spell)
     bonus = (caster.get('spellcasting') or {}).get('attack') or 0
@@ -370,7 +414,14 @@ def _resolve_attack(state, caster, spell, targets, slot, rolls):
     for target_id in targets:
         target = combat._require_creature(state, target_id)
         if combat._is_dead(target):
-            raise EngineError('INVALID_TARGET', f'{target_id} is dead', {'id': target_id})
+            # An earlier beam can kill a shared target. The remaining beam is
+            # spent rather than rejecting a cast that has already resolved.
+            done.append({
+                'id': target_id, 'hit': False, 'crit': False, 'attack_roll': None,
+                'ac': combat._ac_of(target), 'damage': [], 'status': 'dead',
+                'skipped': 'target-dead',
+            })
+            continue
         counter = state['rng']['counter']
         rolled = roll_expr('1d20', state['rng']['seed'], counter, 'none')
         state['rng']['counter'] = counter + 1

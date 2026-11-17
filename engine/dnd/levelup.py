@@ -4,6 +4,7 @@ import copy
 
 from dnd.chargen import (
     ABILITIES,
+    PREPARED_CLASSES,
     ability_mod,
     refresh_gear,
     refresh_skills,
@@ -299,25 +300,35 @@ def _learn_spells(character, class_index, row, choices):
         casting['known'].append(index)
     casting['known'] = sorted(casting['known'])
     if choices.get('prepared') is not None:
+        if class_index not in PREPARED_CLASSES:
+            rule('this class does not prepare spells', class_index=class_index)
+        if not isinstance(choices['prepared'], list):
+            rule('prepared spells must be a list')
         prepared = list(choices['prepared'])
+        if any(not isinstance(index, str) for index in prepared):
+            rule('prepared spell ids must be strings')
         limit = _prepared_limit(character)
         domain = set(casting.get('domain') or [])
         chosen = [index for index in prepared if index not in domain]
         if len(chosen) > limit:
             rule('too many prepared spells', limit=limit, got=len(chosen))
+        if len(set(prepared)) != len(prepared):
+            rule('prepared spells must be distinct')
         for index in chosen:
             spell = _spell(index)
             if class_index == 'wizard' and index not in casting['known']:
                 rule('prepared spell is not in the spellbook', spell=index)
             if spell['level'] < 1 or spell['level'] > highest:
                 rule('prepared spell is too high', spell=index)
+            if not _on_list(spell, class_index, character):
+                rule('prepared spell is not on the class list', spell=index)
         casting['prepared'] = sorted(set(prepared))
 
 
 def _prepared_limit(character):
     casting = character['spellcasting']
     mod = ability_mod(character['abilities'][casting['ability']])
-    if character['class'] in ('paladin', 'ranger'):
+    if character['class'] == 'paladin':
         return max(1, character['level'] // 2 + mod)
     return max(1, mod + character['level'])
 
