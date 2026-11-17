@@ -61,7 +61,10 @@ def spawn_encounter(state, adventure, encounter_id, roll_hp):
 def start_combat(state, ids, surprised):
     if (state.get('combat') or {}).get('active'):
         rule('combat is already active')
-    surprised = list(surprised or [])
+    ids = _combat_ids(ids, 'combatants', required=True)
+    surprised = _combat_ids([] if surprised is None else surprised, 'surprised')
+    if not set(surprised).issubset(ids):
+        raise EngineError('BAD_ARGS', 'surprised creatures must be combatants')
     rows = []
     counter = state['rng']['counter']
     seed = state['rng']['seed']
@@ -92,11 +95,21 @@ def start_combat(state, ids, surprised):
     new_state = _copy(state)
     new_state['combat'] = combat
     new_state['rng']['counter'] = counter
+    for creature_id in ids:
+        # Reactions are available before a creature's first turn, unless it
+        # is surprised. Actual reaction commands still check incapacitation.
+        combat['economy'][creature_id] = {
+            'action': False, 'bonus': False,
+            'reaction': creature_id not in surprised, 'movement_ft': 0,
+            'death_save_done': False,
+        }
     _begin_turn(new_state, ordered[0]['id'])
     changes = [
         {'op': 'set', 'path': 'combat', 'from': state.get('combat'), 'to': new_state['combat']},
         _counter(state['rng']['counter'], counter),
     ]
+    for creature_id in _touched(state, new_state):
+        changes.append(_creature_change(state, new_state, creature_id))
     event = _event(
         'combat-start', 'dm',
         'combat start --combatants ' + ','.join(ids) + ' --as dm',
@@ -143,6 +156,8 @@ def end_turn(state, actor):
     finished = combat.get('surprised_done') or []
     if current in surprised and current not in finished:
         combat.setdefault('surprised_done', []).append(current)
+        # Surprise prevents reactions only until this first turn has ended.
+        economy['reaction'] = True
     nxt, wrapped = _advance_index(new_state)
     if wrapped:
         _tick_rounds(new_state)
@@ -408,8 +423,12 @@ def death_save(state, char_id, actor):
         rule('already stable', id=char_id)
     if character['hp']['current'] > 0:
         rule('death saves are only at 0 hit points', id=char_id)
+    economy = state['combat']['economy'].get(char_id) or {}
+    if economy.get('death_save_done'):
+        raise EngineError('NO_ACTION_LEFT', 'death save already made this turn', {'id': char_id})
     new_state = _copy(state)
     character = _require_creature(new_state, char_id)
+    new_state['combat']['economy'][char_id]['death_save_done'] = True
     counter = new_state['rng']['counter']
     rolled = roll_expr('1d20', new_state['rng']['seed'], counter, 'none')
     natural = rolled['kept'][0]
@@ -442,6 +461,7 @@ def death_save(state, char_id, actor):
         'natural': natural,
     }
     changes = [
+        {'op': 'set', 'path': 'combat', 'from': state.get('combat'), 'to': new_state['combat']},
         _creature_change(state, new_state, char_id),
         _counter(counter, counter + 1),
     ]
@@ -592,7 +612,18 @@ def _begin_turn(state, creature_id):
             'reaction': True,
             'movement_ft': 0 if _incapacitated(creature) else _speed(creature),
         }
+    economy['death_save_done'] = False
     state['combat'].setdefault('economy', {})[creature_id] = economy
+
+
+def _combat_ids(values, label, required=False):
+    if not isinstance(values, (list, tuple)) or (required and not values):
+        raise EngineError('BAD_ARGS', f'{label} must be a nonempty list of creature ids')
+    if any(not isinstance(value, str) or not value or value != value.strip() for value in values):
+        raise EngineError('BAD_ARGS', f'{label} must contain nonempty creature ids')
+    if len(values) != len(set(values)):
+        raise EngineError('BAD_ARGS', f'{label} must not contain duplicate ids')
+    return list(values)
 
 
 def _advance_index(state):
@@ -1273,13 +1304,21 @@ def _copy(state):
 
 
 def parse_duration(text):
-    if not text:
+    if text is None:
         return None
-    if text.startswith('rounds:'):
-        return {'type': 'rounds', 'rounds': int(text.split(':', 1)[1])}
-    if text.startswith('until:end-of-turn:'):
-        return {'type': 'end-of-turn', 'id': text.split(':', 2)[2]}
-    if text.startswith('save:'):
-        _tag, ability, dc = text.split(':')
-        return {'type': 'save', 'ability': ability, 'dc': int(dc)}
+    if isinstance(text, str):
+        try:
+            if re.fullmatch(r'rounds:[0-9]+', text):
+                rounds = int(text.split(':', 1)[1])
+                if rounds > 0:
+                    return {'type': 'rounds', 'rounds': rounds}
+            match = re.fullmatch(r'until:end-of-turn:([A-Za-z][A-Za-z0-9-]*)', text)
+            if match:
+                return {'type': 'end-of-turn', 'id': match.group(1)}
+            match = re.fullmatch(r'save:(str|dex|con|int|wis|cha):([0-9]+)', text)
+            if match:
+                return {'type': 'save', 'ability': match.group(1), 'dc': int(match.group(2))}
+        except ValueError:
+            # Python also rejects decimal strings exceeding its integer limit.
+            pass
     raise EngineError('BAD_ARGS', 'bad condition duration', {'duration': text})

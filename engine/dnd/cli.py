@@ -1388,7 +1388,12 @@ def _read_adventure_doc(directory):
 
 
 def _ids(text):
-    return [part.strip() for part in (text or '').split(',') if part.strip()]
+    if text is None or not text.strip():
+        return []
+    parts = [part.strip() for part in text.split(',')]
+    if any(not part for part in parts):
+        raise EngineError('BAD_ARGS', 'id lists cannot contain empty entries')
+    return parts
 
 
 def cmd_spawn(args, explicit):
