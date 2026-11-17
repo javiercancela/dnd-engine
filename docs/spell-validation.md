@@ -1,0 +1,5 @@
+# Spell target and preparation validation
+
+- Modeled spells validate target counts and duplicates before spending dice, slots, or actions. Single-target spells accept one creature; self-only spells accept only their caster. Area spells accept distinct declared creatures because there is no map. Acid splash accepts up to two distinct creatures, Bless accepts three plus one per higher slot, and prayer/mass healing accepts up to six distinct creatures.
+- Eldritch blast resolves the level's beam count. A single target receives all beams; multiple target entries allocate beams in order and may repeat a creature. A beam aimed at a target killed by an earlier beam is spent without another roll. Magic missile keeps its round-robin dart allocation, bounded by the number of darts. Spells with a manual effect, including scorching ray, keep DM adjudication.
+- Only clerics, druids, paladins, and wizards prepare spells. Prepared choices must be on the class list, with automatically granted domain/circle/oath spells exempt from the limit; a wizard also needs the spell in the spellbook. Rangers cast from their known spells.
