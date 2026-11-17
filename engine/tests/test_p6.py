@@ -82,6 +82,35 @@ class TableTest(unittest.TestCase):
         self.assertTrue(payload['ok'])
         self.assertFalse((Path.home() / '.dnd_active').exists())
 
+    def test_wrapper_ignores_a_dnd_package_in_the_caller_cwd(self):
+        work = Path(self.tmp.name) / 'shadow'
+        package = work / 'dnd'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('', encoding='utf-8')
+        (package / '__main__.py').write_text('raise SystemExit("shadowed")\n', encoding='utf-8')
+        proc = subprocess.run(
+            [str(BIN), 'help', '--about'],
+            cwd=work,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIn('SRD 5.1', payload['result']['about'])
+
+    def test_spawn_start_combat_skips_dead_characters(self):
+        self.run_bin(['campaign', 'new', 'hall', '--adventure', str(YARD), '--seed', '5', '--as', 'dm'])
+        self.run_bin(['char', 'create', '--json-in', str(PARTY / 'pc-mira.json'), '--as', 'dm'])
+        self.run_bin(['damage', 'pc-mira', '30', '--type', 'force', '--as', 'dm'])
+        sheet = self.run_bin(['char', 'show', 'pc-mira', '--as', 'dm'])[1]['result']
+        self.assertTrue(sheet['dead'])
+        started = self.run_bin(['encounter', 'spawn', 'lone-goblin', '--start-combat', '--as', 'dm'])
+        self.assertEqual(started[0], 0, started[1])
+        status = self.run_bin(['combat', 'status', '--as', 'dm'])[1]['result']
+        self.assertEqual([row['id'] for row in status['combatants']], ['goblin-1'])
+
     def test_extra_attack_is_two_swings(self):
         self.run_bin(['campaign', 'new', 'hall', '--adventure', str(YARD), '--seed', '5', '--as', 'dm'])
         self.run_bin(['char', 'create', '--json-in', str(PARTY / 'pc-tor.json'), '--as', 'dm'])

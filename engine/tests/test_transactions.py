@@ -50,13 +50,15 @@ class CampaignTransactionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'RULE_VIOLATION')
         self.assertEqual(self.snapshot(), before)
 
-    def test_rejected_spawn_with_dead_participant_changes_nothing(self):
+    def test_spawn_start_combat_skips_a_dead_character(self):
         self.invoke('damage', 'pc-tor', '1000', '--type', 'slashing', '--as', 'dm')
-        before = self.snapshot()
-        with self.assertRaises(EngineError) as caught:
-            self.invoke('encounter', 'spawn', 'lone-goblin', '--start-combat', '--as', 'dm')
-        self.assertEqual(caught.exception.code, 'INVALID_TARGET')
-        self.assertEqual(self.snapshot(), before)
+        result = self.invoke('encounter', 'spawn', 'lone-goblin', '--start-combat', '--as', 'dm')
+        self.assertEqual([row['id'] for row in result['result']['combat']['order']], ['goblin-1'])
+        self.assertEqual(result['turn']['current'], 'goblin-1')
+        events = store.read_events(self.directory)
+        replayed, head = store.fold(events)
+        self.assertEqual(replayed, store.read_state(self.directory))
+        self.assertEqual(head, events[-1]['hash'])
 
     def test_spawn_and_combat_commit_a_replayable_batch(self):
         result = self.invoke(
