@@ -254,9 +254,7 @@ def _validate_targets(spell, caster, targets, slot, kind):
         limit = 6
     elif index == 'acid-splash':
         limit = 2
-    elif index == 'chain-lightning':
-        limit = 4 + max(0, (slot or spell['level']) - spell['level'])
-    elif kind in ('save', 'sleep') and spell.get('area_of_effect') and index != 'disintegrate':
+    elif kind in ('save', 'sleep') and spell.get('area_of_effect'):
         limit = None
     else:
         limit = 1

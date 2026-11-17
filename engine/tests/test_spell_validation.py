@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -178,20 +179,97 @@ class SpellPreparationTest(unittest.TestCase):
         levelup.level_up(self.state, 'pc-mira', choices, False, 'pc-mira')
 
     def test_domain_exception_and_known_casters(self):
-        character = copy.deepcopy(self.state['characters']['pc-sel'])
-        character['class'] = 'druid'
-        casting = character['spellcasting']
-        casting.update({'known': [], 'cantrips': ['guidance', 'produce-flame'], 'domain': ['misty-step']})
-        row = {'spellcasting': {'cantrips_known': 2, 'spell_slots_level_1': 4, 'spell_slots_level_2': 2}}
-        casting['slots']['2'] = {'max': 2, 'used': 0}
-        levelup._learn_spells(character, 'druid', row, {'prepared': ['misty-step', 'cure-wounds']})
-        self.assertTrue(spells._available(character, spells.srd.get('spell', 'misty-step'), False))
-        character['class'] = 'ranger'
-        casting.update({'known': ['cure-wounds'], 'prepared': []})
-        self.assertTrue(spells._available(character, spells.srd.get('spell', 'cure-wounds'), False))
-        row['spellcasting']['spells_known'] = 1
-        with self.assertRaisesRegex(EngineError, 'does not prepare spells'):
-            levelup._learn_spells(character, 'ranger', row, {'prepared': ['cure-wounds']})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'campaigns'
+            home = Path(temporary) / 'home'
+            root.mkdir()
+            home.mkdir()
+            previous_home = os.environ.get('HOME')
+            previous_campaign = os.environ.get('DND_CAMPAIGN')
+            os.environ['HOME'] = str(home)
+            os.environ['DND_CAMPAIGN'] = str(root)
+            try:
+                adventure = Path(__file__).resolve().parent / 'fixtures' / 'waystone.json'
+                self.assertEqual(self._cli([
+                    'campaign', 'new', 'hall', '--adventure', str(adventure), '--seed', '3', '--as', 'dm',
+                ]), 0)
+                self.assertEqual(self._cli([
+                    'char', 'create', '--json-in', self._write(temporary, 'druid', {
+                        'id': 'pc-dru', 'name': 'Dru', 'player': 'bot:dru', 'race': 'human',
+                        'class': 'druid', 'background': 'acolyte',
+                        'abilities': {'method': 'standard-array', 'str': 8, 'dex': 14, 'con': 13, 'int': 10, 'wis': 15, 'cha': 12},
+                        'skills': ['medicine', 'nature'], 'languages': ['dwarvish', 'elvish', 'giant'],
+                        'spells_known': ['guidance', 'druidcraft'],
+                        'spells_prepared': ['cure-wounds', 'entangle', 'faerie-fire', 'goodberry'],
+                    }), '--as', 'dm',
+                ]), 0)
+                self.assertEqual(self._cli([
+                    'char', 'create', '--json-in', self._write(temporary, 'ranger', {
+                        'id': 'pc-ran', 'name': 'Ran', 'player': 'bot:ran', 'race': 'human',
+                        'class': 'ranger', 'background': 'acolyte',
+                        'abilities': {'method': 'standard-array', 'str': 15, 'dex': 14, 'con': 13, 'int': 10, 'wis': 12, 'cha': 8},
+                        'skills': ['animal-handling', 'athletics', 'nature'],
+                        'languages': ['dwarvish', 'elvish', 'giant'],
+                    }), '--as', 'dm',
+                ]), 0)
+                self.assertEqual(self._cli(['xp', 'milestone', '5', '--as', 'dm']), 0)
+                self.assertEqual(self._cli([
+                    'level', 'up', 'pc-dru', '--json-in', self._write(temporary, 'dru2', {'subclass': 'land'}), '--as', 'pc-dru',
+                ]), 0)
+                self.assertEqual(self._cli([
+                    'level', 'up', 'pc-dru', '--json-in', self._write(temporary, 'dru3', {
+                        'prepared': ['misty-step', 'cure-wounds'],
+                    }), '--as', 'pc-dru',
+                ]), 0)
+                cast = self._payload([
+                    'cast', 'pc-dru', 'misty-step', '--targets', 'pc-dru', '--as', 'pc-dru',
+                ])
+                self.assertTrue(cast['ok'], cast)
+                self.assertEqual(self._cli([
+                    'level', 'up', 'pc-ran', '--json-in', self._write(temporary, 'ran2', {
+                        'fighting_style': 'ranger-fighting-style-archery',
+                        'spells': ['cure-wounds', 'goodberry'],
+                    }), '--as', 'pc-ran',
+                ]), 0)
+                healed = self._payload([
+                    'cast', 'pc-ran', 'cure-wounds', '--targets', 'pc-ran', '--as', 'pc-ran',
+                ])
+                self.assertTrue(healed['ok'], healed)
+                refused = self._payload([
+                    'level', 'up', 'pc-ran', '--json-in', self._write(temporary, 'ran3', {
+                        'subclass': 'hunter', 'hunters_prey': 'colossus-slayer',
+                        'spells': ['hunters-mark'], 'prepared': ['cure-wounds'],
+                    }), '--as', 'pc-ran',
+                ])
+                self.assertFalse(refused['ok'])
+                self.assertIn('does not prepare spells', refused['error']['message'])
+            finally:
+                if previous_home is None:
+                    os.environ.pop('HOME', None)
+                else:
+                    os.environ['HOME'] = previous_home
+                if previous_campaign is None:
+                    os.environ.pop('DND_CAMPAIGN', None)
+                else:
+                    os.environ['DND_CAMPAIGN'] = previous_campaign
+
+    def _write(self, temporary, name, data):
+        path = Path(temporary) / f'{name}.json'
+        path.write_text(json.dumps(data), encoding='utf-8')
+        return str(path)
+
+    def _cli(self, args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main(args)
+        self.assertEqual(out.getvalue().count('\n'), 1)
+        return code
+
+    def _payload(self, args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(args)
+        return json.loads(out.getvalue())
 
 
 if __name__ == '__main__':
