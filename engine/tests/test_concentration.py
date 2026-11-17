@@ -162,6 +162,7 @@ class ConcentrationTest(unittest.TestCase):
         self.assertEqual(state['characters']['pc-sel']['hp']['current'], state['characters']['pc-sel']['hp']['max'])
         self.assertEqual(len(result['rolls']), 2)
         self.assertEqual(result['rolls'][-1]['expr'], '1d20')
+        self.assertIn('broken', result['result']['concentration'])
 
     def test_another_casters_bless_survives_when_one_concentration_ends(self):
         data = json.loads((FIXTURES / 'party' / 'pc-sel.json').read_text())

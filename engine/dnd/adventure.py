@@ -281,6 +281,7 @@ def trap_trigger(state, adventure, trap_id, target_id):
         total, natural = _save(new_state, target, save.get('ability') or 'dex', rolls)
         success = total >= save.get('dc', 0)
     amount = 0
+    concentration = None
     if effect.get('damage') and target_id:
         amount, _record = _expr_amount(new_state, effect['damage'], rolls, trap_id)
         if success and save.get('half'):
@@ -288,13 +289,19 @@ def trap_trigger(state, adventure, trap_id, target_id):
         target = combat._require_creature(new_state, target_id)
         amount = combat._mitigate(target, effect.get('type') or 'bludgeoning', amount)
         combat._apply_damage_parts(new_state, target, [{'type': effect.get('type') or 'bludgeoning', 'amount': amount}], False)
-        concentration_rolls, _concentration = combat.check_concentration(new_state, target, amount)
+        concentration_rolls, concentration = combat.check_concentration(new_state, target, amount)
         rolls.extend(concentration_rolls)
     triggered = list(new_state.setdefault('adventure', {}).get('triggered') or [])
     if trap_id not in triggered:
         triggered.append(trap_id)
     new_state['adventure']['triggered'] = triggered
     result = {'trap': trap_id, 'damage': amount, 'saved': success, 'total': total}
+    if concentration:
+        result['concentration'] = {
+            key: concentration[key]
+            for key in ('dc', 'total', 'success', 'broken', 'reason')
+            if key in concentration
+        }
     return result, [_progress_event(state, new_state, rolls, f'trap trigger {trap_id} --as dm', result)]
 
 
