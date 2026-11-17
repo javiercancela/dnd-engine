@@ -81,3 +81,8 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - `override` sets one path and refuses `rng`. It does not rewrite older events.
 - `player add` registers a seat. Controllers are `bot:<name>`, `javi`, or `dm`. The engine still cannot see which process ran a command. A `javi` or `dm` seat is stamped `relayed_by: dm`.
 - Player-facing output drops `dm_notes`, `dm_only`, `target_hp`, monster hit-point objects, secret dice, and trap DCs.
+
+## Command transactions
+
+- Campaign commands lock before reading and verifying the event log. All events in a command are prepared and validated before the batch is appended, so a rejected command writes no events or state changes. Ordinary commits apply the new batch to the verified snapshot; undo replays history because it changes which earlier events apply.
+- `state.json` is replaced atomically after the log append. Read commands use the verified log snapshot, so a missing or stale cache does not change their output.
