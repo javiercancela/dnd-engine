@@ -1405,7 +1405,10 @@ def cmd_spawn(args, explicit):
         events = [event]
         if args.start_combat:
             staged = store.apply_changes(campaign.state, event['changes'])
-            ids_to_fight = list((staged.get('characters') or {}).keys()) + result['spawned']
+            ids_to_fight = [
+                char_id for char_id, character in (staged.get('characters') or {}).items()
+                if not character.get('dead')
+            ] + result['spawned']
             started, start_event = combat.start_combat(staged, ids_to_fight, [])
             events.append(start_event)
             result = {'spawned': result['spawned'], 'combat': started}
