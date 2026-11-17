@@ -1,2 +1,3 @@
 #!/bin/sh
-cd "$(dirname "$0")/../engine" && exec python3 -m dnd "$@"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$here/engine${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dnd "$@"
