@@ -134,7 +134,7 @@ class CliTest(unittest.TestCase):
         directory = self.root / 'waystone'
         log_path = directory / 'events.jsonl'
         state_path = directory / 'state.json'
-        code, payload = self.invoke(('verify',))
+        code, payload = self.invoke(('verify', '--as', 'dm'))
         self.assertEqual(code, 0, payload)
         self.assertEqual(payload['result']['ok'], True)
         self.assertEqual(payload['result']['events'], 2)

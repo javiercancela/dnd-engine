@@ -85,6 +85,7 @@ Paths in the spec such as `/workspace/rpg/...` mean this repo root.
 - `override` sets one path and refuses `rng`. It does not rewrite older events.
 - `player add` registers a seat. Controllers are `bot:<name>`, `javi`, or `dm`. The engine still cannot see which process ran a command. A `javi` or `dm` seat is stamped `relayed_by: dm`.
 - Player-facing output drops `dm_notes`, `dm_only`, `target_hp`, monster hit-point objects, secret dice, and trap DCs.
+- A player's `log` is a public projection, not a replayable audit log. The DM still receives the stored events, including commands, reasons, state changes, rolls, RNG, and the hash chain. A player event keeps its id, time, type, actor, relay or revert reference, public rolls, and the public outcome fields. The command text keeps positional ids and weapon, spell, and target ids, and drops dice expressions, amounts, DCs, and other flag values. Free-text reasons are shown only on events whose actor is the player reading the log. Creature snapshots show the viewer's own sheet, another character's public summary, or a monster's name and health status. Overrides, leaf changes, other state paths, and unknown outcome fields are omitted. Numeric monster HP is never included. RNG state and raw event hashes are omitted: the seed rebuilds secret dice, and an unsalted hash can be guessed against a concealed value. `verify` returns `head_hash` only to the DM for the same reason. Secret dice keep only their counter and `secret: true`.
 
 ## Command transactions
 

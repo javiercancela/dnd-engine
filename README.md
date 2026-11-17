@@ -104,10 +104,10 @@ The owning character, or the DM for a `javi` or `dm` seat: `check`, `save`, `att
 | `xp award <amount> [--to all\|a,b]` / `xp milestone <level>` | `available` level, capped at 5 |
 | `level up <id> [--json-in FILE] [--roll]` | One level. Choices cover subclass, `asi`, `spells`, `cantrips`. |
 | `rest short [--spend id:N]` / `rest long` | Hit dice, slots, Second Wind, Arcane Recovery |
-| `log [--last N] [--type attack]` | Events. Players do not see monster hit points, secret dice, or DM notes. |
+| `log [--last N] [--type attack]` | DM sees the full audit log. A player sees who acted and the ids of attackers, targets, weapons, and spells, plus the reason on events they made. They do not see monster hit points, secret dice, other characters' sheets, other people's reasons, or the hash chain. |
 | `undo --reason TEXT` | `reverts` the last change. The dice counter stays where it is. |
 | `override <path> <json> --reason TEXT` | Sets that path. `rng` is forbidden. |
-| `verify` | `ok`, `events`, `head_hash` or `LOG_TAMPERED` |
+| `verify` | `ok` and `events`. `head_hash` is returned only to `--as dm`, because the hash can be used to guess a secret roll. |
 
 ## A turn
 

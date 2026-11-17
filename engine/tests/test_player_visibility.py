@@ -60,7 +60,7 @@ class PlayerVisibilityTest(unittest.TestCase):
                           'SECRET-PATH', 'SECRET-VALUE', 'dm_notes'):
             self.assertNotIn(forbidden, encoded)
         check = public[-1]
-        self.assertEqual(check['cmd'], 'check')
+        self.assertEqual(check['cmd'], 'check pc-tor perception')
         self.assertIn('total', check['outcome'])
         self.assertNotIn('success', check['outcome'])
         healed = next(event for event in public if event['type'] == 'heal')
@@ -97,6 +97,22 @@ class PlayerVisibilityTest(unittest.TestCase):
             self.assertNotIn('prev_hash', event)
         self.assertEqual(public[-1]['rolls'], [{'counter': 0, 'secret': True}])
         self.assertEqual(public[-1]['cmd'], 'roll')
+        self.assertNotIn('reason', public[-1])
+
+    def test_player_sees_reason_only_on_their_own_events(self):
+        self.invoke('roll', '1d6', '--reason', 'my-own-note', '--as', 'pc-tor')
+        own = self.events('pc-tor', '--last', '1')[0]
+        other = self.events('pc-mira', '--last', '1')[0]
+        self.assertEqual(own['reason'], 'my-own-note')
+        self.assertEqual(own['cmd'], 'roll')
+        self.assertNotIn('reason', other)
+        self.assertNotIn('my-own-note', json.dumps(other))
+
+    def test_verify_hides_head_hash_from_players(self):
+        player = self.invoke('verify', '--as', 'pc-tor')
+        self.assertEqual(set(player['result']), {'ok', 'events'})
+        dm = self.invoke('verify', '--as', 'dm')
+        self.assertIn('head_hash', dm['result'])
 
     def test_rolled_monster_hp_is_hidden_and_monster_snapshot_has_status(self):
         self.invoke('encounter', 'spawn', 'lone-goblin', '--roll-hp', '--as', 'dm')
@@ -122,15 +138,21 @@ class PlayerVisibilityTest(unittest.TestCase):
         self.assertEqual(saved[-1]['reason'], 'SECRET-ROLL')
 
     def test_unknown_nested_outcome_fields_are_not_public(self):
-        event = {
-            'id': 9, 'type': 'cast', 'actor': 'pc-mira', 'cmd': 'cast pc-mira fire-bolt',
-            'changes': [], 'rolls': [],
+        store.append_event(self.root / 'veil', {
+            'actor': 'pc-mira',
+            'type': 'cast',
+            'cmd': 'cast pc-mira fire-bolt --targets goblin-1 --as pc-mira',
+            'changes': [],
+            'rolls': [],
             'outcome': {'effect': 'attack', 'targets': [
                 {'id': 'goblin-1', 'hit': True, 'hp': 27183,
                  'dm_only': 'SECRET-NESTED', 'unexpected': {'label': 'SECRET-WRAPPED'}}]},
-        }
-        shown = cli._redact(event, 'pc-tor')
+        })
+        shown = self.events('pc-tor', '--last', '1')[0]
+        self.assertEqual(shown['cmd'], 'cast pc-mira fire-bolt goblin-1')
         self.assertEqual(shown['outcome']['targets'], [{'id': 'goblin-1', 'hit': True}])
+        self.assertNotIn('27183', json.dumps(shown))
+        self.assertNotIn('SECRET-NESTED', json.dumps(shown))
 
 
 if __name__ == '__main__':

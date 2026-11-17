@@ -391,7 +391,7 @@ def dispatch(argv):
     if group == 'campaign' and verb == 'info':
         return cmd_campaign_info(args, explicit)
     if group == 'verify':
-        return cmd_verify(explicit)
+        return cmd_verify(args, explicit)
     if group == 'roll':
         return cmd_roll(args, explicit)
     if group == 'log':
@@ -585,11 +585,13 @@ def cmd_campaign_info(_args, explicit):
     )
 
 
-def cmd_verify(explicit):
+def cmd_verify(args, explicit):
     directory = store.open_campaign(explicit)
     with store.transaction(directory) as campaign:
         result = campaign.verify()
         state = campaign.state
+    if getattr(args, 'actor', None) != 'dm':
+        result = {'ok': result['ok'], 'events': result['events']}
     return _ok('verify', result, turn=store.turn_view(state))
 
 
@@ -842,15 +844,52 @@ def _public_fields(value, fields):
     return value
 
 
+_PUBLIC_ID_FLAGS = {'--weapon', '--natural', '--targets', '--target', '--to'}
+
+
+def _public_id(token):
+    """Keep creature, item, and spell ids. Drop dice, amounts, and DCs."""
+    if not token or token.startswith('--'):
+        return False
+    if token.isdigit():
+        return False
+    folded = token.lower()
+    if any(character.isdigit() for character in folded) and 'd' in folded:
+        return False
+    body = token.replace('-', '').replace(',', '').replace(':', '')
+    return body.isalnum()
+
+
 def _public_command(event):
-    # Arguments and free-form reasons can contain hidden DCs or secrets.
+    """Keep the command and public ids. Drop flags that can carry secrets."""
     words = str(event.get('cmd') or '').split()
+    if not words:
+        return 'event'
     commands = {entry['name'] for entry in COMMANDS}
+    label_length = 1
     for count in (2, 1):
-        label = ' '.join(words[:count])
-        if label in commands:
-            return label
-    return 'adventure' if event.get('type') == 'adventure' else 'event'
+        if ' '.join(words[:count]) in commands:
+            label_length = count
+            break
+    kept = words[:label_length]
+    index = label_length
+    while index < len(words):
+        token = words[index]
+        if token in _PUBLIC_ID_FLAGS and index + 1 < len(words):
+            if _public_id(words[index + 1]):
+                kept.append(words[index + 1])
+            index += 2
+            continue
+        if token.startswith('--'):
+            if token in _VALUE_FLAGS and index + 1 < len(words) and not words[index + 1].startswith('--'):
+                index += 2
+            else:
+                index += 1
+            continue
+        if _public_id(token):
+            kept.append(token)
+        index += 1
+    return ' '.join(kept)
 
 
 def _redact(event, actor):
@@ -880,6 +919,8 @@ def _redact(event, actor):
             public = _player_change(change, actor)
             if public is not None:
                 shown['changes'].append(public)
+    if event.get('actor') == actor and event.get('reason'):
+        shown['reason'] = event['reason']
     if not event.get('secret') and isinstance(event.get('outcome'), dict):
         allowed = _PUBLIC_OUTCOMES.get(event_type, set())
         nested = _PUBLIC_OUTCOME_FIELDS
