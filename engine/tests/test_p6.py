@@ -63,6 +63,25 @@ class TableTest(unittest.TestCase):
         self.assertEqual(code, 0, payload)
         self.assertIn('SRD 5.1', payload['result']['about'])
 
+    def test_wrapper_resolves_relative_paths_from_the_caller_cwd(self):
+        work = Path(self.tmp.name) / 'work'
+        folder = work / 'adventures-private'
+        folder.mkdir(parents=True)
+        (folder / 'x.json').write_bytes(YARD.read_bytes())
+        proc = subprocess.run(
+            [str(BIN), 'adventure', 'validate', 'adventures-private/x.json'],
+            cwd=work,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.stderr, '', proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 0, payload)
+        self.assertTrue(payload['ok'])
+        self.assertFalse((Path.home() / '.dnd_active').exists())
+
     def test_extra_attack_is_two_swings(self):
         self.run_bin(['campaign', 'new', 'hall', '--adventure', str(YARD), '--seed', '5', '--as', 'dm'])
         self.run_bin(['char', 'create', '--json-in', str(PARTY / 'pc-tor.json'), '--as', 'dm'])
